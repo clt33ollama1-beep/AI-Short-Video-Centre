@@ -1,0 +1,6 @@
+{
+  "name": "CineForge AI 影音短劇自動化導演平台",
+  "description": "串聯 Gemini 劇本編導、分鏡繪製、Omni 動態影像生成、TTS 角色配音與 Lyria 原創配樂的一站式 AI 短劇自動化製作平台。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
