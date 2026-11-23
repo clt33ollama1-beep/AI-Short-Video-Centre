@@ -501,10 +501,72 @@ function buildLocalHeaders(token: unknown, includeJson = true): Record<string, s
   return headers;
 }
 
+const OPENAI_DRAMA_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    title: { type: "string" },
+    logline: { type: "string" },
+    directorVision: { type: "string" },
+    musicPrompt: { type: "string" },
+    characters: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          name: { type: "string" },
+          role: { type: "string" },
+          appearanceAnchor: { type: "string" },
+          voiceName: { type: "string", enum: ["Puck", "Charon", "Kore", "Fenrir", "Zephyr"] },
+          voiceStyle: { type: "string" },
+        },
+        required: ["name", "role", "appearanceAnchor", "voiceName", "voiceStyle"],
+      },
+    },
+    scenes: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          sceneNumber: { type: "integer" },
+          title: { type: "string" },
+          shotType: { type: "string" },
+          durationSec: { type: "integer" },
+          motionEffect: { type: "string", enum: ["zoom", "pan", "pull"] },
+          visualPrompt: { type: "string" },
+          videoMotionPrompt: { type: "string" },
+          speaker: { type: "string" },
+          voiceName: { type: "string", enum: ["Puck", "Charon", "Kore", "Fenrir", "Zephyr"] },
+          voiceStyle: { type: "string" },
+          dialogueLine: { type: "string" },
+          sfxCue: { type: "string" },
+        },
+        required: [
+          "sceneNumber",
+          "title",
+          "shotType",
+          "durationSec",
+          "motionEffect",
+          "visualPrompt",
+          "videoMotionPrompt",
+          "speaker",
+          "voiceName",
+          "voiceStyle",
+          "dialogueLine",
+          "sfxCue",
+        ],
+      },
+    },
+  },
+  required: ["title", "logline", "directorVision", "musicPrompt", "characters", "scenes"],
+};
+
 function extractJsonFromModelText(raw: string): Record<string, unknown> {
-  const trimmed = raw.trim();
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  const candidate = fenced ? fenced[1].trim() : trimmed;
+  const withoutThink = raw.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  const fenced = withoutThink.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  const candidate = fenced ? fenced[1].trim() : withoutThink;
   try {
     return JSON.parse(candidate) as Record<string, unknown>;
   } catch {
@@ -669,7 +731,7 @@ app.post("/api/local/script", async (req, res) => {
       const resp = await fetch(`${baseUrl}/api/chat`, {
         method: "POST",
         headers: llmHeaders,
-        signal: AbortSignal.timeout(120000),
+        signal: AbortSignal.timeout(300000),
         body: JSON.stringify({
           model,
           format: "json",
@@ -690,27 +752,63 @@ app.post("/api/local/script", async (req, res) => {
       const endpoint = baseUrl.endsWith("/v1")
         ? `${baseUrl}/chat/completions`
         : `${baseUrl}/v1/chat/completions`;
-      const resp = await fetch(endpoint, {
-        method: "POST",
-        headers: llmHeaders,
-        signal: AbortSignal.timeout(120000),
-        body: JSON.stringify({
+      const messages = [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ];
+
+      const formatCandidates: Array<Record<string, unknown> | undefined> = [
+        { type: "json_object" },
+        {
+          type: "json_schema",
+          json_schema: {
+            name: "drama_production",
+            strict: true,
+            schema: OPENAI_DRAMA_JSON_SCHEMA,
+          },
+        },
+        undefined,
+      ];
+
+      let resp: Response | null = null;
+      let lastErrBody = "";
+      for (const responseFormat of formatCandidates) {
+        const bodyPayload: Record<string, unknown> = {
           model,
-          response_format: { type: "json_object" },
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
-          ],
-        }),
-      });
-      if (!resp.ok) {
-        const errBody = await resp.text();
-        throw new Error(`本地 OpenAI 相容端點錯誤 (${resp.status}): ${errBody}`);
+          messages,
+          ...(responseFormat ? { response_format: responseFormat } : {}),
+        };
+        resp = await fetch(endpoint, {
+          method: "POST",
+          headers: llmHeaders,
+          signal: AbortSignal.timeout(300000),
+          body: JSON.stringify(bodyPayload),
+        });
+        if (resp.ok) break;
+        lastErrBody = await resp.text();
+        if (
+          resp.status === 400 &&
+          (lastErrBody.includes("response_format") ||
+            lastErrBody.includes("json_schema") ||
+            lastErrBody.includes("json_object"))
+        ) {
+          continue;
+        }
+        throw new Error(`本地 OpenAI 相容端點錯誤 (${resp.status}): ${lastErrBody}`);
+      }
+
+      if (!resp || !resp.ok) {
+        throw new Error(
+          `本地 OpenAI 相容端點錯誤 (${resp?.status ?? 502}): ${lastErrBody}`
+        );
       }
       const data = (await resp.json()) as {
-        choices?: Array<{ message?: { content?: string } }>;
+        choices?: Array<{ message?: { content?: string; reasoning_content?: string } }>;
       };
-      rawText = data.choices?.[0]?.message?.content ?? "";
+      rawText =
+        data.choices?.[0]?.message?.content ||
+        data.choices?.[0]?.message?.reasoning_content ||
+        "";
     }
 
     const parsed = extractJsonFromModelText(rawText);
@@ -1017,6 +1115,7 @@ app.post("/api/local/music", async (req, res) => {
 
 async function startServer() {
   const httpServer = createHttpServer(app);
+  httpServer.requestTimeout = 600000;
 
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");

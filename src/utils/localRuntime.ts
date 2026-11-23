@@ -60,10 +60,72 @@ export function saveEnginePreferences(prefs: EnginePreferences): void {
   }
 }
 
+const OPENAI_DRAMA_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    title: { type: "string" },
+    logline: { type: "string" },
+    directorVision: { type: "string" },
+    musicPrompt: { type: "string" },
+    characters: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          name: { type: "string" },
+          role: { type: "string" },
+          appearanceAnchor: { type: "string" },
+          voiceName: { type: "string", enum: ["Puck", "Charon", "Kore", "Fenrir", "Zephyr"] },
+          voiceStyle: { type: "string" },
+        },
+        required: ["name", "role", "appearanceAnchor", "voiceName", "voiceStyle"],
+      },
+    },
+    scenes: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          sceneNumber: { type: "integer" },
+          title: { type: "string" },
+          shotType: { type: "string" },
+          durationSec: { type: "integer" },
+          motionEffect: { type: "string", enum: ["zoom", "pan", "pull"] },
+          visualPrompt: { type: "string" },
+          videoMotionPrompt: { type: "string" },
+          speaker: { type: "string" },
+          voiceName: { type: "string", enum: ["Puck", "Charon", "Kore", "Fenrir", "Zephyr"] },
+          voiceStyle: { type: "string" },
+          dialogueLine: { type: "string" },
+          sfxCue: { type: "string" },
+        },
+        required: [
+          "sceneNumber",
+          "title",
+          "shotType",
+          "durationSec",
+          "motionEffect",
+          "visualPrompt",
+          "videoMotionPrompt",
+          "speaker",
+          "voiceName",
+          "voiceStyle",
+          "dialogueLine",
+          "sfxCue",
+        ],
+      },
+    },
+  },
+  required: ["title", "logline", "directorVision", "musicPrompt", "characters", "scenes"],
+};
+
 export function extractJsonFromText(raw: string): Record<string, unknown> {
-  const trimmed = raw.trim();
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  const candidate = fenced ? fenced[1].trim() : trimmed;
+  const withoutThink = raw.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  const fenced = withoutThink.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  const candidate = fenced ? fenced[1].trim() : withoutThink;
   try {
     return JSON.parse(candidate) as Record<string, unknown>;
   } catch {
@@ -383,19 +445,51 @@ export async function generateLocalScriptDirect(
     const endpoint = baseUrl.endsWith("/v1")
       ? `${baseUrl}/chat/completions`
       : `${baseUrl}/v1/chat/completions`;
-    const resp = await fetch(endpoint, {
-      method: "POST",
-      headers: llmHeaders,
-      body: JSON.stringify({
-        model,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-      }),
-    });
-    if (!resp.ok) throw new Error(`本地 LLM 錯誤 (${resp.status})`);
+    const messages = [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt },
+    ];
+    const formatCandidates: Array<Record<string, unknown> | undefined> = [
+      { type: "json_object" },
+      {
+        type: "json_schema",
+        json_schema: {
+          name: "drama_production",
+          strict: true,
+          schema: OPENAI_DRAMA_JSON_SCHEMA,
+        },
+      },
+      undefined,
+    ];
+
+    let resp: Response | null = null;
+    let lastErrBody = "";
+    for (const responseFormat of formatCandidates) {
+      resp = await fetch(endpoint, {
+        method: "POST",
+        headers: llmHeaders,
+        body: JSON.stringify({
+          model,
+          messages,
+          ...(responseFormat ? { response_format: responseFormat } : {}),
+        }),
+      });
+      if (resp.ok) break;
+      lastErrBody = await resp.text();
+      if (
+        resp.status === 400 &&
+        (lastErrBody.includes("response_format") ||
+          lastErrBody.includes("json_schema") ||
+          lastErrBody.includes("json_object"))
+      ) {
+        continue;
+      }
+      throw new Error(`本地 LLM 錯誤 (${resp.status}): ${lastErrBody}`);
+    }
+
+    if (!resp || !resp.ok) {
+      throw new Error(`本地 LLM 錯誤 (${resp?.status ?? 502}): ${lastErrBody}`);
+    }
     const data = (await resp.json()) as { choices?: Array<{ message?: { content?: string } }> };
     rawText = data.choices?.[0]?.message?.content ?? "";
   }
