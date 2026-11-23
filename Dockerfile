@@ -1,9 +1,11 @@
 # Stage 1: Build frontend bundle
-FROM node:22-alpine AS builder
+FROM node:22-slim AS builder
 WORKDIR /app
 
-COPY package.json package-lock.json ./
-RUN npm ci --legacy-peer-deps
+# Install from package.json without platform-locked lockfile so native optional bindings
+# (rolldown, tailwindcss/oxide, lightningcss) resolve cleanly for the target arch.
+COPY package.json ./
+RUN npm install --legacy-peer-deps
 
 COPY tsconfig.json vite.config.ts index.html metadata.json server.ts ./
 COPY src ./src
@@ -11,14 +13,14 @@ COPY src ./src
 RUN npm run build
 
 # Stage 2: Production runtime
-FROM node:22-alpine AS runner
+FROM node:22-slim AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
 ENV PORT=3000
 
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev --legacy-peer-deps && npm cache clean --force
+COPY package.json ./
+RUN npm install --omit=dev --legacy-peer-deps && npm cache clean --force
 
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/server.ts ./server.ts
