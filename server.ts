@@ -6,10 +6,12 @@ import path from "node:path";
 import { GoogleGenAI, Type } from "@google/genai";
 
 const app = express();
-app.use(express.json({ limit: "50mb" }));
+app.use(express.json({ limit: "150mb" }));
 
 const PORT = Number(process.env.PORT || 3000);
 const ROOT_DIR = import.meta.dirname;
+const DATA_DIR = process.env.CINEFORGE_DATA_DIR || path.join(ROOT_DIR, "data");
+const PROJECTS_FILE = path.join(DATA_DIR, "projects.json");
 
 function getAI() {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -80,6 +82,47 @@ function parseDataUrl(dataUrl: string): { mimeType: string; data: string } | nul
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, hasKey: Boolean(process.env.GEMINI_API_KEY) });
+});
+
+app.get("/api/projects", (_req, res) => {
+  try {
+    if (!fs.existsSync(PROJECTS_FILE)) {
+      res.json({ projects: [], activeProjectId: "", updatedAt: 0 });
+      return;
+    }
+    const raw = fs.readFileSync(PROJECTS_FILE, "utf8");
+    const data = JSON.parse(raw);
+    res.json(data);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "讀取專案存檔失敗";
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.put("/api/projects", (req, res) => {
+  try {
+    const { projects, activeProjectId, updatedAt } = req.body ?? {};
+    if (!Array.isArray(projects)) {
+      res.status(400).json({ error: "projects 必須為陣列" });
+      return;
+    }
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    const tmpFile = `${PROJECTS_FILE}.tmp`;
+    fs.writeFileSync(
+      tmpFile,
+      JSON.stringify({
+        projects,
+        activeProjectId: typeof activeProjectId === "string" ? activeProjectId : "",
+        updatedAt: Number(updatedAt) || Date.now(),
+      }),
+      "utf8"
+    );
+    fs.renameSync(tmpFile, PROJECTS_FILE);
+    res.json({ ok: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "寫入專案存檔失敗";
+    res.status(500).json({ error: msg });
+  }
 });
 
 app.post("/api/director/script", async (req, res) => {

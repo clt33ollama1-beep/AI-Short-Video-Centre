@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, CheckCircle2, Clapperboard, Cpu, Image as ImageIcon, Loader2, Sparkles, Video, X } from "lucide-react";
 import { CreationStudioModal } from "./components/CreationStudioModal";
 import { LocalModelModal } from "./components/LocalModelModal";
@@ -28,6 +28,12 @@ import {
   renderAndDownloadWebM,
 } from "./utils/exportProduction";
 import { loadEnginePreferences, saveEnginePreferences } from "./utils/localRuntime";
+import {
+  exportProjectJson,
+  loadPersistedWorkspace,
+  parseImportedProjectJson,
+  savePersistedWorkspace,
+} from "./utils/projectStorage";
 
 type ViewTab = "screening" | "storyboard" | "timeline" | "script";
 
@@ -60,6 +66,37 @@ export default function App() {
   const [isExportingWebM, setIsExportingWebM] = useState(false);
   const [exportProgressLabel, setExportProgressLabel] = useState("");
   const [bannerError, setBannerError] = useState<string | null>(null);
+  const hasHydratedRef = useRef(false);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadPersistedWorkspace()
+      .then((ws) => {
+        if (cancelled) return;
+        setProjects(ws.projects);
+        setActiveProjectId(ws.activeProjectId);
+        const targetProj = ws.projects.find((p) => p.id === ws.activeProjectId) ?? ws.projects[0];
+        if (targetProj?.scenes[0]?.id) {
+          setSelectedSceneId(targetProj.scenes[0].id);
+        }
+        hasHydratedRef.current = true;
+      })
+      .catch(() => {
+        hasHydratedRef.current = true;
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hasHydratedRef.current) return;
+    const timer = setTimeout(() => {
+      void savePersistedWorkspace(projects, activeProjectId);
+    }, 450);
+    return () => clearTimeout(timer);
+  }, [projects, activeProjectId]);
 
   const activeProject = useMemo(
     () => projects.find((p) => p.id === activeProjectId) ?? projects[0],
@@ -1168,13 +1205,57 @@ export default function App() {
                   攝影與調色方向：{activeProject.directorVision}
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => exportProductionBible(activeProject)}
-                className="px-4 py-2 text-xs font-medium rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-200 hover:bg-zinc-800 transition-colors shrink-0 cursor-pointer"
-              >
-                下載分鏡劇本 (.md)
-              </button>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <input
+                  ref={importInputRef}
+                  type="file"
+                  accept="application/json,.json"
+                  className="hidden"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    e.target.value = "";
+                    if (!file) return;
+                    try {
+                      const text = await file.text();
+                      const imported = parseImportedProjectJson(text);
+                      setProjects((prev) => [
+                        imported,
+                        ...prev.filter((p) => p.id !== imported.id),
+                      ]);
+                      setActiveProjectId(imported.id);
+                      if (imported.scenes[0]?.id) {
+                        setSelectedSceneId(imported.scenes[0].id);
+                      }
+                      setBannerError(null);
+                    } catch (err) {
+                      setBannerError(
+                        err instanceof Error ? err.message : "專案檔匯入失敗"
+                      );
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => importInputRef.current?.click()}
+                  className="px-3.5 py-2 text-xs font-medium rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-300 hover:bg-zinc-800 transition-colors cursor-pointer"
+                >
+                  匯入專案 (.json)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => exportProjectJson(activeProject)}
+                  className="px-3.5 py-2 text-xs font-medium rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-300 hover:bg-zinc-800 transition-colors cursor-pointer"
+                >
+                  匯出專案備份 (.json)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => exportProductionBible(activeProject)}
+                  className="px-4 py-2 text-xs font-medium rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-200 hover:bg-zinc-800 transition-colors cursor-pointer"
+                >
+                  下載分鏡劇本 (.md)
+                </button>
+              </div>
             </div>
 
             <div className="overflow-x-auto">
