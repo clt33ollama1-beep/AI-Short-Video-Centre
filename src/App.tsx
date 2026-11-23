@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import { AlertCircle, CheckCircle2, Clapperboard, Cpu, Loader2, Sparkles, Video, X } from "lucide-react";
+import { AlertCircle, CheckCircle2, Clapperboard, Cpu, Image as ImageIcon, Loader2, Sparkles, Video, X } from "lucide-react";
 import { CreationStudioModal } from "./components/CreationStudioModal";
 import { LocalModelModal } from "./components/LocalModelModal";
 import { ScreeningPlayer } from "./components/ScreeningPlayer";
@@ -428,56 +428,78 @@ export default function App() {
 
       if (newScenes.length > 0) {
         const first = newScenes[0];
-        const res0 = await generateStoryboardApi(
-          {
-            prompt: styleHint ? `${first.visualPrompt}. Style: ${styleHint}` : first.visualPrompt,
-            aspectRatio: brief.aspectRatio,
-            highQuality: brief.highQualityImages,
-          },
-          enginePrefs
-        );
-        anchorImageUrl = res0.imageUrl;
-        completed += 1;
-        updateScene(projectId, first.id, (sc) => ({
-          ...sc,
-          imageUrl: res0.imageUrl,
-          status: { ...sc.status, image: "ready" },
-        }));
-        setPipeline((prev) => ({ ...prev, completedCount: completed }));
+        try {
+          const res0 = await generateStoryboardApi(
+            {
+              prompt: styleHint ? `${first.visualPrompt}. Style: ${styleHint}` : first.visualPrompt,
+              aspectRatio: brief.aspectRatio,
+              highQuality: brief.highQualityImages,
+            },
+            enginePrefs
+          );
+          anchorImageUrl = res0.imageUrl;
+          updateScene(projectId, first.id, (sc) => ({
+            ...sc,
+            imageUrl: res0.imageUrl,
+            status: { ...sc.status, image: "ready" },
+          }));
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "首場分鏡生成失敗";
+          updateScene(projectId, first.id, (sc) => ({
+            ...sc,
+            status: { ...sc.status, image: "error", errorMessage: msg },
+          }));
+          setBannerError(msg);
+        } finally {
+          completed += 1;
+          setPipeline((prev) => ({ ...prev, completedCount: completed }));
+        }
       }
 
       const restScenes = newScenes.slice(1);
-      await Promise.all(
-        restScenes.map(async (scene) => {
-          try {
-            const res = await generateStoryboardApi(
-              {
-                prompt: styleHint
-                  ? `${scene.visualPrompt}. Style: ${styleHint}`
-                  : scene.visualPrompt,
-                aspectRatio: brief.aspectRatio,
-                highQuality: brief.highQualityImages,
-                referenceImageDataUrl: anchorImageUrl,
-              },
-              enginePrefs
-            );
-            updateScene(projectId, scene.id, (sc) => ({
-              ...sc,
-              imageUrl: res.imageUrl,
-              status: { ...sc.status, image: "ready" },
-            }));
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : "分鏡生成失敗";
-            updateScene(projectId, scene.id, (sc) => ({
-              ...sc,
-              status: { ...sc.status, image: "error", errorMessage: msg },
-            }));
-          } finally {
-            completed += 1;
-            setPipeline((prev) => ({ ...prev, completedCount: completed }));
+      const renderRestScene = async (scene: DramaScene) => {
+        try {
+          const res = await generateStoryboardApi(
+            {
+              prompt: styleHint
+                ? `${scene.visualPrompt}. Style: ${styleHint}`
+                : scene.visualPrompt,
+              aspectRatio: brief.aspectRatio,
+              highQuality: brief.highQualityImages,
+              referenceImageDataUrl: anchorImageUrl,
+            },
+            enginePrefs
+          );
+          if (!anchorImageUrl) {
+            anchorImageUrl = res.imageUrl;
           }
-        })
-      );
+          updateScene(projectId, scene.id, (sc) => ({
+            ...sc,
+            imageUrl: res.imageUrl,
+            status: { ...sc.status, image: "ready" },
+          }));
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "分鏡生成失敗";
+          updateScene(projectId, scene.id, (sc) => ({
+            ...sc,
+            status: { ...sc.status, image: "error", errorMessage: msg },
+          }));
+          setBannerError((prev) => prev || msg);
+        } finally {
+          completed += 1;
+          setPipeline((prev) => ({ ...prev, completedCount: completed }));
+        }
+      };
+
+      // Local GPU servers (ComfyUI / Automatic1111) process one queue item at a time;
+      // run sequentially to avoid flooding the queue and hitting per-request timeouts.
+      if (enginePrefs.imageProvider === "local") {
+        for (const scene of restScenes) {
+          await renderRestScene(scene);
+        }
+      } else {
+        await Promise.all(restScenes.map(renderRestScene));
+      }
 
       // Step 3: Generate TTS voiceovers + Lyria Score concurrently
       setPipeline((prev) => ({
@@ -692,6 +714,80 @@ export default function App() {
     }
   };
 
+  const handleGenerateMissingImages = async () => {
+    const project = activeProject;
+    const targets = project.scenes.filter((s) => !s.imageUrl);
+    if (targets.length === 0) return;
+
+    setBannerError(null);
+    let done = 0;
+    let failedCount = 0;
+    let anchorImageUrl = project.scenes.find((s) => Boolean(s.imageUrl))?.imageUrl;
+    const styleHint =
+      VISUAL_STYLE_OPTIONS.find((v) => v.id === project.visualStyle)?.promptHint ?? "";
+
+    setPipeline({
+      active: true,
+      currentStep: `正在補繪 ${targets.length} 個缺漏分鏡影格...`,
+      completedCount: 0,
+      totalCount: targets.length,
+    });
+
+    const runOne = async (scene: DramaScene) => {
+      updateScene(project.id, scene.id, (sc) => ({
+        ...sc,
+        status: { ...sc.status, image: "generating", errorMessage: undefined },
+      }));
+      try {
+        const { imageUrl } = await generateStoryboardApi(
+          {
+            prompt: styleHint
+              ? `${scene.visualPrompt}. Visual style: ${styleHint}`
+              : scene.visualPrompt,
+            aspectRatio: project.aspectRatio,
+            referenceImageDataUrl: scene.sceneNumber > 1 ? anchorImageUrl : undefined,
+          },
+          enginePrefs
+        );
+        if (!anchorImageUrl) anchorImageUrl = imageUrl;
+        updateScene(project.id, scene.id, (sc) => ({
+          ...sc,
+          imageUrl,
+          status: { ...sc.status, image: "ready", errorMessage: undefined },
+        }));
+      } catch (err) {
+        failedCount += 1;
+        const msg = err instanceof Error ? err.message : "分鏡圖生成失敗";
+        updateScene(project.id, scene.id, (sc) => ({
+          ...sc,
+          status: { ...sc.status, image: "error", errorMessage: msg },
+        }));
+        setBannerError(msg);
+      } finally {
+        done += 1;
+        setPipeline((prev) => ({ ...prev, completedCount: done }));
+      }
+    };
+
+    if (enginePrefs.imageProvider === "local") {
+      for (const scene of targets) {
+        await runOne(scene);
+      }
+    } else {
+      await Promise.all(targets.map(runOne));
+    }
+
+    setPipeline({
+      active: false,
+      currentStep:
+        failedCount > 0
+          ? `補繪完成，但有 ${failedCount} 場失敗，可於「分鏡導演室」個別重試。`
+          : "所有缺漏分鏡影格補繪完成",
+      completedCount: targets.length,
+      totalCount: targets.length,
+    });
+  };
+
   const handleUpgradeAllVideos = async () => {
     const targets = activeProject.scenes.filter((s) => !s.videoUrl);
     if (targets.length === 0) return;
@@ -882,6 +978,18 @@ export default function App() {
                   : "Gemini 雲端"}
               </span>
             </button>
+
+            {stats.readyImages < activeProject.scenes.length && (
+              <button
+                type="button"
+                onClick={handleGenerateMissingImages}
+                disabled={pipeline.active}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-[#111114] border border-amber-500/50 text-amber-400 hover:bg-zinc-900 disabled:opacity-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <ImageIcon className="w-3.5 h-3.5" />
+                <span>補繪缺漏分鏡</span>
+              </button>
+            )}
 
             {stats.readyVideos < activeProject.scenes.length && (
               <button

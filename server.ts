@@ -942,24 +942,63 @@ app.post("/api/local/storyboard", async (req, res) => {
       const { prompt_id } = (await queueResp.json()) as { prompt_id: string };
 
       let outputImage: { filename: string; subfolder: string; type: string } | null = null;
-      const deadline = Date.now() + 150000;
+      const deadline = Date.now() + 300000;
       while (Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 1500));
         const histResp = await fetch(`${baseUrl}/history/${prompt_id}`, { headers: imageGetHeaders });
         if (!histResp.ok) continue;
         const hist = (await histResp.json()) as Record<
           string,
-          { outputs?: Record<string, { images?: Array<{ filename: string; subfolder: string; type: string }> }> }
+          {
+            status?: {
+              status_str?: string;
+              completed?: boolean;
+              messages?: Array<[string, Record<string, unknown>]>;
+            };
+            outputs?: Record<string, { images?: Array<{ filename: string; subfolder: string; type: string }> }>;
+          }
         >;
         const entry = hist[prompt_id];
-        const firstImg = entry?.outputs?.["9"]?.images?.[0];
+        if (entry?.status?.status_str === "error") {
+          const execErr = entry.status.messages?.find((m) => m[0] === "execution_error")?.[1];
+          const nodeType = execErr?.node_type ? String(execErr.node_type) : "ComfyUI";
+          const detail = execErr?.exception_message
+            ? String(execErr.exception_message).trim()
+            : "工作流程執行發生錯誤";
+          throw new Error(`ComfyUI 算圖失敗（${nodeType}）：${detail}`);
+        }
+        const firstImg =
+          entry?.outputs?.["9"]?.images?.[0] ??
+          Object.values(entry?.outputs ?? {}).find((o) => o.images && o.images.length > 0)?.images?.[0];
         if (firstImg) {
           outputImage = firstImg;
           break;
         }
       }
 
-      if (!outputImage) throw new Error("ComfyUI 算圖逾時，請檢查 ComfyUI 佇列狀態。");
+      if (!outputImage) {
+        let queueHint = "";
+        try {
+          const qResp = await fetch(`${baseUrl}/queue`, {
+            headers: imageGetHeaders,
+            signal: AbortSignal.timeout(4000),
+          });
+          if (qResp.ok) {
+            const qData = (await qResp.json()) as {
+              queue_running?: unknown[];
+              queue_pending?: unknown[];
+            };
+            const running = qData.queue_running?.length ?? 0;
+            const pending = qData.queue_pending?.length ?? 0;
+            queueHint = `（目前佇列：執行中 ${running} 筆、等待中 ${pending} 筆，prompt_id=${prompt_id}）`;
+          }
+        } catch {
+          // ignore queue inspection errors
+        }
+        throw new Error(
+          `ComfyUI 算圖逾時（已等待 300 秒）${queueHint}。請檢查 ComfyUI 終端機進度或至「分鏡導演室」個別繪製未完成場次。`
+        );
+      }
       const viewUrl = `${baseUrl}/view?filename=${encodeURIComponent(
         outputImage.filename
       )}&subfolder=${encodeURIComponent(outputImage.subfolder)}&type=${encodeURIComponent(
