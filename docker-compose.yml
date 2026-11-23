@@ -10,9 +10,9 @@ services:
       NODE_ENV: production
       PORT: 3000
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      CINEFORGE_DATA_DIR: /app/data
+      CINEFORGE_DATA_DIR: /app/cineforge-data
     volumes:
-      - ./data:/app/data
+      - ./cineforge-data:/app/cineforge-data
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped

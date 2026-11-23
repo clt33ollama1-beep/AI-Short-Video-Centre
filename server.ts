@@ -10,7 +10,7 @@ app.use(express.json({ limit: "150mb" }));
 
 const PORT = Number(process.env.PORT || 3000);
 const ROOT_DIR = import.meta.dirname;
-const DATA_DIR = process.env.CINEFORGE_DATA_DIR || path.join(ROOT_DIR, "data");
+const DATA_DIR = process.env.CINEFORGE_DATA_DIR || path.join(ROOT_DIR, "cineforge-data");
 const PROJECTS_FILE = path.join(DATA_DIR, "projects.json");
 
 function getAI() {

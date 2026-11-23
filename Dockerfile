@@ -26,7 +26,7 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/server.ts ./server.ts
 COPY --from=builder /app/src/assets ./src/assets
 
-RUN chown -R node:node /app
+RUN mkdir -p /app/cineforge-data && chown -R node:node /app
 USER node
 
 EXPOSE 3000
