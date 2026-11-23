@@ -14,7 +14,9 @@ const ROOT_DIR = import.meta.dirname;
 function getAI() {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    throw new Error("未偵測到 GEMINI_API_KEY，請先於系統設定金鑰後再試。");
+    throw new Error(
+      "未偵測到 GEMINI_API_KEY。若於本機或 Docker 部署，請在 .env 或 -e 環境變數設定 GEMINI_API_KEY；若於 AI Studio 請至 Settings > Secrets 設定，或於右上角「引擎設定」切換為本地端模型。"
+    );
   }
   return new GoogleGenAI({
     apiKey,
@@ -487,6 +489,18 @@ function sanitizeBaseUrl(raw: unknown, fallback: string): string {
   return input.replace(/\/+$/, "");
 }
 
+function buildLocalHeaders(token: unknown, includeJson = true): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (includeJson) {
+    headers["Content-Type"] = "application/json";
+  }
+  if (typeof token === "string" && token.trim()) {
+    const raw = token.trim();
+    headers.Authorization = raw.toLowerCase().startsWith("bearer ") ? raw : `Bearer ${raw}`;
+  }
+  return headers;
+}
+
 function extractJsonFromModelText(raw: string): Record<string, unknown> {
   const trimmed = raw.trim();
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
@@ -504,11 +518,12 @@ function extractJsonFromModelText(raw: string): Record<string, unknown> {
 
 app.post("/api/local/probe", async (req, res) => {
   try {
-    const { kind, baseUrl } = req.body ?? {};
+    const { kind, baseUrl, authToken } = req.body ?? {};
     const url = sanitizeBaseUrl(baseUrl, "http://127.0.0.1:11434");
+    const headers = buildLocalHeaders(authToken, false);
 
     if (kind === "ollama") {
-      const resp = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(8000) });
+      const resp = await fetch(`${url}/api/tags`, { headers, signal: AbortSignal.timeout(8000) });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = (await resp.json()) as { models?: Array<{ name?: string; model?: string }> };
       const models = (data.models ?? []).map((m) => m.name || m.model || "").filter(Boolean);
@@ -518,7 +533,7 @@ app.post("/api/local/probe", async (req, res) => {
 
     if (kind === "openai_compatible") {
       const target = url.endsWith("/v1") ? `${url}/models` : `${url}/v1/models`;
-      const resp = await fetch(target, { signal: AbortSignal.timeout(8000) });
+      const resp = await fetch(target, { headers, signal: AbortSignal.timeout(8000) });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = (await resp.json()) as { data?: Array<{ id?: string }> };
       const models = (data.data ?? []).map((m) => m.id || "").filter(Boolean);
@@ -527,7 +542,7 @@ app.post("/api/local/probe", async (req, res) => {
     }
 
     if (kind === "a1111") {
-      const resp = await fetch(`${url}/sdapi/v1/sd-models`, { signal: AbortSignal.timeout(8000) });
+      const resp = await fetch(`${url}/sdapi/v1/sd-models`, { headers, signal: AbortSignal.timeout(8000) });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = (await resp.json()) as Array<{ title?: string; model_name?: string }>;
       const models = data.map((m) => m.title || m.model_name || "").filter(Boolean);
@@ -537,6 +552,7 @@ app.post("/api/local/probe", async (req, res) => {
 
     if (kind === "comfyui") {
       const resp = await fetch(`${url}/object_info/CheckpointLoaderSimple`, {
+        headers,
         signal: AbortSignal.timeout(8000),
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -548,7 +564,7 @@ app.post("/api/local/probe", async (req, res) => {
       return;
     }
 
-    const ping = await fetch(url, { signal: AbortSignal.timeout(6000) });
+    const ping = await fetch(url, { headers, signal: AbortSignal.timeout(6000) });
     res.json({ ok: ping.ok, models: [], message: ping.ok ? "端點可連線" : `回應狀態 ${ping.status}` });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "無法連線至本地端模型服務";
@@ -603,10 +619,11 @@ app.post("/api/local/script", async (req, res) => {
     ].join("\n");
 
     let rawText = "";
+    const llmHeaders = buildLocalHeaders(localConfig.llmAuthToken, true);
     if (llmProvider === "ollama") {
       const resp = await fetch(`${baseUrl}/api/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: llmHeaders,
         signal: AbortSignal.timeout(120000),
         body: JSON.stringify({
           model,
@@ -630,7 +647,7 @@ app.post("/api/local/script", async (req, res) => {
         : `${baseUrl}/v1/chat/completions`;
       const resp = await fetch(endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: llmHeaders,
         signal: AbortSignal.timeout(120000),
         body: JSON.stringify({
           model,
@@ -676,6 +693,8 @@ app.post("/api/local/storyboard", async (req, res) => {
     const provider = localConfig.imageProvider || "a1111";
     const baseUrl = sanitizeBaseUrl(localConfig.imageBaseUrl, "http://127.0.0.1:7860");
     const imageModel = typeof localConfig.imageModel === "string" ? localConfig.imageModel.trim() : "";
+    const imageHeaders = buildLocalHeaders(localConfig.imageAuthToken, true);
+    const imageGetHeaders = buildLocalHeaders(localConfig.imageAuthToken, false);
     const width = aspectRatio === "9:16" ? 576 : 1024;
     const height = aspectRatio === "9:16" ? 1024 : 576;
 
@@ -703,7 +722,7 @@ app.post("/api/local/storyboard", async (req, res) => {
 
       const resp = await fetch(endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: imageHeaders,
         signal: AbortSignal.timeout(180000),
         body: JSON.stringify(payload),
       });
@@ -725,6 +744,7 @@ app.post("/api/local/storyboard", async (req, res) => {
       let ckpt = imageModel;
       if (!ckpt) {
         const infoResp = await fetch(`${baseUrl}/object_info/CheckpointLoaderSimple`, {
+          headers: imageGetHeaders,
           signal: AbortSignal.timeout(8000),
         });
         if (infoResp.ok) {
@@ -770,7 +790,7 @@ app.post("/api/local/storyboard", async (req, res) => {
 
       const queueResp = await fetch(`${baseUrl}/prompt`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: imageHeaders,
         body: JSON.stringify({ prompt: workflow }),
       });
       if (!queueResp.ok) {
@@ -782,7 +802,7 @@ app.post("/api/local/storyboard", async (req, res) => {
       const deadline = Date.now() + 150000;
       while (Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 1500));
-        const histResp = await fetch(`${baseUrl}/history/${prompt_id}`);
+        const histResp = await fetch(`${baseUrl}/history/${prompt_id}`, { headers: imageGetHeaders });
         if (!histResp.ok) continue;
         const hist = (await histResp.json()) as Record<
           string,
@@ -802,7 +822,7 @@ app.post("/api/local/storyboard", async (req, res) => {
       )}&subfolder=${encodeURIComponent(outputImage.subfolder)}&type=${encodeURIComponent(
         outputImage.type
       )}`;
-      const imgResp = await fetch(viewUrl);
+      const imgResp = await fetch(viewUrl, { headers: imageGetHeaders });
       const buf = Buffer.from(await imgResp.arrayBuffer());
       res.json({
         imageUrl: `data:image/png;base64,${buf.toString("base64")}`,
@@ -818,7 +838,7 @@ app.post("/api/local/storyboard", async (req, res) => {
       : `${baseUrl}/v1/images/generations`;
     const resp = await fetch(endpoint, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: imageHeaders,
       signal: AbortSignal.timeout(180000),
       body: JSON.stringify({
         model: imageModel || "flux",
@@ -851,7 +871,7 @@ app.post("/api/local/video", async (req, res) => {
 
     const resp = await fetch(baseUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: buildLocalHeaders(localConfig.videoAuthToken, true),
       signal: AbortSignal.timeout(300000),
       body: JSON.stringify({ prompt, imageDataUrl, aspectRatio, durationSec }),
     });
@@ -891,7 +911,7 @@ app.post("/api/local/speech", async (req, res) => {
 
     const resp = await fetch(endpoint, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: buildLocalHeaders(localConfig.ttsAuthToken, true),
       signal: AbortSignal.timeout(60000),
       body: JSON.stringify({
         model: localConfig.ttsModel || "kokoro",
@@ -926,7 +946,7 @@ app.post("/api/local/music", async (req, res) => {
     const baseUrl = sanitizeBaseUrl(localConfig.musicBaseUrl, "http://127.0.0.1:8000");
     const resp = await fetch(baseUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: buildLocalHeaders(localConfig.musicAuthToken, true),
       signal: AbortSignal.timeout(180000),
       body: JSON.stringify({ prompt: prompt.trim(), duration: 30 }),
     });

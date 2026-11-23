@@ -83,17 +83,22 @@ export interface LocalModelConfig {
   llmProvider: "ollama" | "openai_compatible";
   llmBaseUrl: string;
   llmModel: string;
+  llmAuthToken?: string;
   imageProvider: "a1111" | "comfyui" | "openai_compatible";
   imageBaseUrl: string;
   imageModel: string;
+  imageAuthToken?: string;
   videoProvider: "custom_http" | "comfyui_animate";
   videoBaseUrl: string;
+  videoAuthToken?: string;
   ttsProvider: "openai_compatible" | "browser_speech";
   ttsBaseUrl: string;
   ttsModel: string;
   ttsVoice: string;
+  ttsAuthToken?: string;
   musicProvider: "local_synth" | "local_http";
   musicBaseUrl: string;
+  musicAuthToken?: string;
 }
 
 export interface EnginePreferences {

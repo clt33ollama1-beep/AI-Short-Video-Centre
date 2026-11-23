@@ -93,12 +93,13 @@ function normalizeProductionResponse(raw: Record<string, unknown>, brief: Produc
 export async function probeLocalEndpoint(
   kind: "ollama" | "openai_compatible" | "a1111" | "comfyui",
   baseUrl: string,
-  transportMode: "server" | "browser"
+  transportMode: "server" | "browser",
+  authToken?: string
 ): Promise<{ ok: boolean; models: string[]; message: string }> {
   if (transportMode === "browser") {
-    return probeLocalDirect(kind, baseUrl);
+    return probeLocalDirect(kind, baseUrl, authToken);
   }
-  return postJson("/api/local/probe", { kind, baseUrl });
+  return postJson("/api/local/probe", { kind, baseUrl, authToken });
 }
 
 export async function generateScriptApi(

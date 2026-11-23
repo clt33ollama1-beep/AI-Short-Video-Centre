@@ -7,17 +7,22 @@ export const DEFAULT_LOCAL_CONFIG: LocalModelConfig = {
   llmProvider: "ollama",
   llmBaseUrl: "http://127.0.0.1:11434",
   llmModel: "qwen2.5:14b",
+  llmAuthToken: "",
   imageProvider: "a1111",
   imageBaseUrl: "http://127.0.0.1:7860",
   imageModel: "",
+  imageAuthToken: "",
   videoProvider: "custom_http",
   videoBaseUrl: "http://127.0.0.1:8188",
+  videoAuthToken: "",
   ttsProvider: "browser_speech",
   ttsBaseUrl: "http://127.0.0.1:8880",
   ttsModel: "kokoro",
   ttsVoice: "zf_xiaoxiao",
+  ttsAuthToken: "",
   musicProvider: "local_synth",
   musicBaseUrl: "http://127.0.0.1:8000",
+  musicAuthToken: "",
 };
 
 export const DEFAULT_ENGINE_PREFERENCES: EnginePreferences = {
@@ -247,13 +252,27 @@ export async function synthesizeLocalCinemaScore(prompt: string): Promise<string
   return encodeWavFromAudioBuffer(rendered);
 }
 
+function buildHeaders(token?: string, includeJson = true): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (includeJson) {
+    headers["Content-Type"] = "application/json";
+  }
+  if (typeof token === "string" && token.trim()) {
+    const raw = token.trim();
+    headers.Authorization = raw.toLowerCase().startsWith("bearer ") ? raw : `Bearer ${raw}`;
+  }
+  return headers;
+}
+
 export async function probeLocalDirect(
   kind: "ollama" | "openai_compatible" | "a1111" | "comfyui",
-  rawBaseUrl: string
+  rawBaseUrl: string,
+  authToken?: string
 ): Promise<{ ok: boolean; models: string[]; message: string }> {
   const url = rawBaseUrl.trim().replace(/\/+$/, "");
+  const headers = buildHeaders(authToken, false);
   if (kind === "ollama") {
-    const resp = await fetch(`${url}/api/tags`);
+    const resp = await fetch(`${url}/api/tags`, { headers });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = (await resp.json()) as { models?: Array<{ name?: string; model?: string }> };
     const models = (data.models ?? []).map((m) => m.name || m.model || "").filter(Boolean);
@@ -261,20 +280,20 @@ export async function probeLocalDirect(
   }
   if (kind === "openai_compatible") {
     const endpoint = url.endsWith("/v1") ? `${url}/models` : `${url}/v1/models`;
-    const resp = await fetch(endpoint);
+    const resp = await fetch(endpoint, { headers });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = (await resp.json()) as { data?: Array<{ id?: string }> };
     const models = (data.data ?? []).map((m) => m.id || "").filter(Boolean);
     return { ok: true, models, message: `瀏覽器已直連端點，偵測到 ${models.length} 個模型` };
   }
   if (kind === "a1111") {
-    const resp = await fetch(`${url}/sdapi/v1/sd-models`);
+    const resp = await fetch(`${url}/sdapi/v1/sd-models`, { headers });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = (await resp.json()) as Array<{ title?: string; model_name?: string }>;
     const models = data.map((m) => m.title || m.model_name || "").filter(Boolean);
     return { ok: true, models, message: `瀏覽器已直連 A1111，偵測到 ${models.length} 個權重` };
   }
-  const resp = await fetch(`${url}/object_info/CheckpointLoaderSimple`);
+  const resp = await fetch(`${url}/object_info/CheckpointLoaderSimple`, { headers });
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   const data = (await resp.json()) as {
     CheckpointLoaderSimple?: { input?: { required?: { ckpt_name?: [string[]] } } };
@@ -306,10 +325,11 @@ export async function generateLocalScriptDirect(
   const userPrompt = `創作主題：${params.premise}\n題材：${params.genre}\n視覺風格：${params.visualStyle}\n比例：${params.aspectRatio}\n場數：${params.sceneCount}\n形式：${params.dialogueMode}`;
 
   let rawText = "";
+  const llmHeaders = buildHeaders(local.llmAuthToken, true);
   if (local.llmProvider === "ollama") {
     const resp = await fetch(`${baseUrl}/api/chat`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: llmHeaders,
       body: JSON.stringify({
         model,
         format: "json",
@@ -329,7 +349,7 @@ export async function generateLocalScriptDirect(
       : `${baseUrl}/v1/chat/completions`;
     const resp = await fetch(endpoint, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: llmHeaders,
       body: JSON.stringify({
         model,
         response_format: { type: "json_object" },
@@ -355,10 +375,12 @@ export async function generateLocalStoryboardDirect(
   const width = params.aspectRatio === "9:16" ? 576 : 1024;
   const height = params.aspectRatio === "9:16" ? 1024 : 576;
 
+  const imageHeaders = buildHeaders(local.imageAuthToken, true);
+
   if (local.imageProvider === "a1111") {
     const resp = await fetch(`${baseUrl}/sdapi/v1/txt2img`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: imageHeaders,
       body: JSON.stringify({
         prompt: `${params.prompt}, cinematic film still, ultra detailed`,
         negative_prompt: "text, watermark, subtitle, blurry",
@@ -381,7 +403,7 @@ export async function generateLocalStoryboardDirect(
       : `${baseUrl}/v1/images/generations`;
     const resp = await fetch(endpoint, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: imageHeaders,
       body: JSON.stringify({
         model: local.imageModel || "flux",
         prompt: params.prompt,
@@ -413,7 +435,7 @@ export async function generateLocalSpeechDirect(
 
   const resp = await fetch(endpoint, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: buildHeaders(local.ttsAuthToken, true),
     body: JSON.stringify({
       model: local.ttsModel || "kokoro",
       input: params.text,

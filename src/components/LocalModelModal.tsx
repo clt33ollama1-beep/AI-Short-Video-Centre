@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { CheckCircle2, Cpu, Loader2, RefreshCw, X } from "lucide-react";
+import { CheckCircle2, Cpu, Eye, EyeOff, KeyRound, Loader2, RefreshCw, X } from "lucide-react";
 import type { EnginePreferences, EngineProvider, LocalModelConfig } from "../types/director";
 import { probeLocalEndpoint } from "../utils/api";
 
@@ -8,6 +8,48 @@ interface LocalModelModalProps {
   preferences: EnginePreferences;
   onSave: (prefs: EnginePreferences) => void;
   onClose: () => void;
+}
+
+function TokenField({
+  label,
+  value,
+  placeholder,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  placeholder?: string;
+  onChange: (next: string) => void;
+}) {
+  const [visible, setVisible] = useState(false);
+
+  return (
+    <div className="space-y-1">
+      <label className="text-zinc-400 flex items-center gap-1.5">
+        <KeyRound className="w-3 h-3 text-zinc-500" />
+        <span>{label}</span>
+      </label>
+      <div className="relative">
+        <input
+          type={visible ? "text" : "password"}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder || "選填（將以 Authorization: Bearer <token> 傳送）"}
+          autoComplete="off"
+          spellCheck={false}
+          className="w-full rounded-lg bg-zinc-950 border border-zinc-800 pl-3 pr-9 py-2 font-mono text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-amber-500/70"
+        />
+        <button
+          type="button"
+          onClick={() => setVisible((v) => !v)}
+          aria-label={visible ? "隱藏權杖" : "顯示權杖"}
+          className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-zinc-500 hover:text-zinc-200 cursor-pointer"
+        >
+          {visible ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+        </button>
+      </div>
+    </div>
+  );
 }
 
 export function LocalModelModal({
@@ -53,7 +95,8 @@ export function LocalModelModal({
         const res = await probeLocalEndpoint(
           draft.local.llmProvider,
           draft.local.llmBaseUrl,
-          draft.local.transportMode
+          draft.local.transportMode,
+          draft.local.llmAuthToken
         );
         setLlmModels(res.models);
         if (res.models.length > 0 && !res.models.includes(draft.local.llmModel)) {
@@ -64,7 +107,8 @@ export function LocalModelModal({
         const res = await probeLocalEndpoint(
           draft.local.imageProvider,
           draft.local.imageBaseUrl,
-          draft.local.transportMode
+          draft.local.transportMode,
+          draft.local.imageAuthToken
         );
         setImageModels(res.models);
         if (res.models.length > 0 && !draft.local.imageModel) {
@@ -285,6 +329,13 @@ export function LocalModelModal({
                 )}
               </div>
             </div>
+
+            <TokenField
+              label="語言模型端點 Access Token / Bearer Token（選填，用於 vLLM / LM Studio / RunPod / 反向代理）"
+              value={draft.local.llmAuthToken ?? ""}
+              onChange={(val) => updateLocal({ llmAuthToken: val })}
+            />
+
             {probeState.target === "llm" && (probeState.message || probeState.error) && (
               <p className={probeState.error ? "text-rose-400" : "text-emerald-400"}>
                 {probeState.error || probeState.message}
@@ -371,19 +422,32 @@ export function LocalModelModal({
               </div>
             </div>
 
+            <TokenField
+              label="生圖端點 Access Token / Bearer Token（選填）"
+              value={draft.local.imageAuthToken ?? ""}
+              onChange={(val) => updateLocal({ imageAuthToken: val })}
+            />
+
             {probeState.target === "image" && (probeState.message || probeState.error) && (
               <p className={probeState.error ? "text-rose-400" : "text-emerald-400"}>
                 {probeState.error || probeState.message}
               </p>
             )}
 
-            <div className="space-y-1">
-              <label className="text-zinc-400 block">本地動態影片生成端點（POST JSON 接收 prompt/imageDataUrl）</label>
-              <input
-                type="text"
-                value={draft.local.videoBaseUrl}
-                onChange={(e) => updateLocal({ videoBaseUrl: e.target.value })}
-                className="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 font-mono text-zinc-100"
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="text-zinc-400 block">本地動態影片生成端點（POST JSON 接收 prompt/imageDataUrl）</label>
+                <input
+                  type="text"
+                  value={draft.local.videoBaseUrl}
+                  onChange={(e) => updateLocal({ videoBaseUrl: e.target.value })}
+                  className="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 font-mono text-zinc-100"
+                />
+              </div>
+              <TokenField
+                label="影片端點 Bearer Token（選填）"
+                value={draft.local.videoAuthToken ?? ""}
+                onChange={(val) => updateLocal({ videoAuthToken: val })}
               />
             </div>
           </div>
@@ -426,45 +490,59 @@ export function LocalModelModal({
             </div>
 
             {draft.local.ttsProvider === "openai_compatible" && (
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div className="space-y-1">
-                  <label className="text-zinc-400 block">TTS 服務位址</label>
-                  <input
-                    type="text"
-                    value={draft.local.ttsBaseUrl}
-                    onChange={(e) => updateLocal({ ttsBaseUrl: e.target.value })}
-                    className="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 font-mono text-zinc-100"
-                  />
+              <div className="space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-zinc-400 block">TTS 服務位址</label>
+                    <input
+                      type="text"
+                      value={draft.local.ttsBaseUrl}
+                      onChange={(e) => updateLocal({ ttsBaseUrl: e.target.value })}
+                      className="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 font-mono text-zinc-100"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-zinc-400 block">模型 ID</label>
+                    <input
+                      type="text"
+                      value={draft.local.ttsModel}
+                      onChange={(e) => updateLocal({ ttsModel: e.target.value })}
+                      className="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 font-mono text-zinc-100"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-zinc-400 block">預設聲線名稱</label>
+                    <input
+                      type="text"
+                      value={draft.local.ttsVoice}
+                      onChange={(e) => updateLocal({ ttsVoice: e.target.value })}
+                      className="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 font-mono text-zinc-100"
+                    />
+                  </div>
                 </div>
-                <div className="space-y-1">
-                  <label className="text-zinc-400 block">模型 ID</label>
-                  <input
-                    type="text"
-                    value={draft.local.ttsModel}
-                    onChange={(e) => updateLocal({ ttsModel: e.target.value })}
-                    className="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 font-mono text-zinc-100"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-zinc-400 block">預設聲線名稱</label>
-                  <input
-                    type="text"
-                    value={draft.local.ttsVoice}
-                    onChange={(e) => updateLocal({ ttsVoice: e.target.value })}
-                    className="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 font-mono text-zinc-100"
-                  />
-                </div>
+                <TokenField
+                  label="TTS 端點 Bearer Token（選填）"
+                  value={draft.local.ttsAuthToken ?? ""}
+                  onChange={(val) => updateLocal({ ttsAuthToken: val })}
+                />
               </div>
             )}
 
             {draft.local.musicProvider === "local_http" && (
-              <div className="space-y-1">
-                <label className="text-zinc-400 block">本地配樂 HTTP 端點</label>
-                <input
-                  type="text"
-                  value={draft.local.musicBaseUrl}
-                  onChange={(e) => updateLocal({ musicBaseUrl: e.target.value })}
-                  className="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 font-mono text-zinc-100"
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-zinc-400 block">本地配樂 HTTP 端點</label>
+                  <input
+                    type="text"
+                    value={draft.local.musicBaseUrl}
+                    onChange={(e) => updateLocal({ musicBaseUrl: e.target.value })}
+                    className="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 font-mono text-zinc-100"
+                  />
+                </div>
+                <TokenField
+                  label="配樂端點 Bearer Token（選填）"
+                  value={draft.local.musicAuthToken ?? ""}
+                  onChange={(val) => updateLocal({ musicAuthToken: val })}
                 />
               </div>
             )}
@@ -472,8 +550,9 @@ export function LocalModelModal({
             <p className="text-[11px] text-zinc-500 leading-relaxed">
               提示：若於雲端預覽網址使用「瀏覽器直連本機」連線電腦上的 Ollama，啟動時請加上{" "}
               <code className="font-mono text-zinc-300">OLLAMA_ORIGINS=&quot;*&quot; ollama serve</code>{" "}
-              以允許跨來源存取；若在本機執行 <code className="font-mono text-zinc-300">npm run dev</code>{" "}
-              則可直接使用預設「後端伺服器代理」。
+              以允許跨來源存取；若在 Docker 或本機執行則可使用「後端伺服器代理」。Gemini 雲端模式金鑰{" "}
+              <code className="font-mono text-zinc-300">GEMINI_API_KEY</code> 請透過執行環境（<code className="font-mono text-zinc-300">.env</code>、Docker{" "}
+              <code className="font-mono text-zinc-300">-e</code> 或 AI Studio Secrets）注入。
             </p>
           </div>
         </div>

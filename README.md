@@ -63,13 +63,14 @@ Click **「引擎：Gemini 雲端 / 本地」** in the workspace bar to switch a
 - **Video Motion**: Custom local HTTP video endpoint (`POST` JSON).
 - **Voiceover / TTS**: Browser offline Web Speech synthesis (zero-server) or local OpenAI-compatible TTS servers (e.g., Kokoro-FastAPI `/v1/audio/speech`).
 - **Music Score**: Built-in Web Audio API `OfflineAudioContext` procedural 30s WAV score synthesizer (zero-server) or local MusicGen/ACE-Step HTTP endpoint.
-- **Routing Mode**: Choose **Server Proxy** (when running locally via `npm run dev`) or **Browser Direct** (to connect directly to `127.0.0.1` from a hosted preview with CORS enabled, e.g. `OLLAMA_ORIGINS="*" ollama serve`).
+- **Routing Mode**: Choose **Server Proxy** (when running locally via `npm run dev` or Docker) or **Browser Direct** (to connect directly to `127.0.0.1` from a hosted preview with CORS enabled, e.g. `OLLAMA_ORIGINS="*" ollama serve`).
+- **Endpoint Access Tokens (Bearer Token)**: Each local / OpenAI-compatible / HTTP endpoint (LLM, Image, Video, TTS, Music) includes an optional **Access Token / Bearer Token** input field in **「引擎設定」**, automatically sent as `Authorization: Bearer <token>` for authenticated vLLM, LM Studio, RunPod, or reverse-proxied servers.
 
 ---
 
 ## Environment Setup / 環境設定
 
-1. **API Key**: Set `GEMINI_API_KEY` in your environment (or AI Studio **Settings > Secrets**) when using Gemini cloud models.
+1. **API Key (Gemini Cloud Mode)**: Set `GEMINI_API_KEY` via `.env`, Docker `-e GEMINI_API_KEY=...`, or AI Studio **Settings > Secrets** (intentionally server-side only, never entered in browser UI). Local-only workflows do not require `GEMINI_API_KEY`.
 2. **Install Dependencies**:
    ```bash
    npm install
