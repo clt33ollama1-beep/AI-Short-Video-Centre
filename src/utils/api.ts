@@ -11,6 +11,7 @@ import {
   generateLocalScriptDirect,
   generateLocalSpeechDirect,
   generateLocalStoryboardDirect,
+  generateLocalVideoDirect,
   probeLocalDirect,
   synthesizeLocalCinemaScore,
 } from "./localRuntime";
@@ -91,7 +92,7 @@ function normalizeProductionResponse(raw: Record<string, unknown>, brief: Produc
 }
 
 export async function probeLocalEndpoint(
-  kind: "ollama" | "openai_compatible" | "a1111" | "comfyui",
+  kind: "ollama" | "openai_compatible" | "a1111" | "comfyui" | "video",
   baseUrl: string,
   transportMode: "server" | "browser",
   authToken?: string
@@ -151,6 +152,9 @@ export async function generateVideoApi(
   prefs: EnginePreferences = DEFAULT_ENGINE_PREFERENCES
 ): Promise<{ videoUrl: string; mimeType: string }> {
   if (prefs.videoProvider === "local") {
+    if (prefs.local.transportMode === "browser") {
+      return generateLocalVideoDirect(params, prefs.local);
+    }
     return postJson("/api/local/video", {
       ...params,
       localConfig: prefs.local,

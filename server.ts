@@ -519,7 +519,15 @@ function extractJsonFromModelText(raw: string): Record<string, unknown> {
 app.post("/api/local/probe", async (req, res) => {
   try {
     const { kind, baseUrl, authToken } = req.body ?? {};
-    const url = sanitizeBaseUrl(baseUrl, "http://127.0.0.1:11434");
+    const fallbackUrl =
+      kind === "video"
+        ? "http://127.0.0.1:8188"
+        : kind === "a1111"
+        ? "http://127.0.0.1:7860"
+        : kind === "comfyui"
+        ? "http://127.0.0.1:8188"
+        : "http://127.0.0.1:11434";
+    const url = sanitizeBaseUrl(baseUrl, fallbackUrl);
     const headers = buildLocalHeaders(authToken, false);
 
     if (kind === "ollama") {
@@ -564,8 +572,45 @@ app.post("/api/local/probe", async (req, res) => {
       return;
     }
 
+    if (kind === "video") {
+      const ping = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
+      if (ping.status === 401 || ping.status === 403) {
+        throw new Error(`驗證失敗（HTTP ${ping.status}），請檢查 Bearer Token 是否正確`);
+      }
+      if (ping.status === 405) {
+        res.json({
+          ok: true,
+          models: [],
+          message: "已連線本地影片端點（伺服器回應 405，僅接受 POST 請求）",
+        });
+        return;
+      }
+      if (ping.status === 404) {
+        const opt = await fetch(url, {
+          method: "OPTIONS",
+          headers,
+          signal: AbortSignal.timeout(5000),
+        }).catch(() => null);
+        if (opt && (opt.ok || opt.status === 204)) {
+          res.json({
+            ok: true,
+            models: [],
+            message: "已連線本地影片端點（端點僅接受 POST / OPTIONS 請求）",
+          });
+          return;
+        }
+        throw new Error("HTTP 404（伺服器可連線，但找不到此端點路徑）");
+      }
+      if (!ping.ok) {
+        throw new Error(`HTTP ${ping.status}`);
+      }
+      res.json({ ok: true, models: [], message: `已連線本地影片端點（HTTP ${ping.status}）` });
+      return;
+    }
+
     const ping = await fetch(url, { headers, signal: AbortSignal.timeout(6000) });
-    res.json({ ok: ping.ok, models: [], message: ping.ok ? "端點可連線" : `回應狀態 ${ping.status}` });
+    if (!ping.ok) throw new Error(`HTTP ${ping.status}`);
+    res.json({ ok: true, models: [], message: `端點可連線（HTTP ${ping.status}）` });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "無法連線至本地端模型服務";
     res.status(502).json({

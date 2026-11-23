@@ -62,7 +62,7 @@ export function LocalModelModal({
   const [llmModels, setLlmModels] = useState<string[]>([]);
   const [imageModels, setImageModels] = useState<string[]>([]);
   const [probeState, setProbeState] = useState<{
-    target: "llm" | "image" | null;
+    target: "llm" | "image" | "video" | null;
     loading: boolean;
     message?: string;
     error?: string;
@@ -88,7 +88,7 @@ export function LocalModelModal({
     }));
   };
 
-  const handleProbe = async (target: "llm" | "image") => {
+  const handleProbe = async (target: "llm" | "image" | "video") => {
     setProbeState({ target, loading: true });
     try {
       if (target === "llm") {
@@ -103,7 +103,7 @@ export function LocalModelModal({
           updateLocal({ llmModel: res.models[0] });
         }
         setProbeState({ target, loading: false, message: res.message });
-      } else {
+      } else if (target === "image") {
         const res = await probeLocalEndpoint(
           draft.local.imageProvider,
           draft.local.imageBaseUrl,
@@ -114,6 +114,14 @@ export function LocalModelModal({
         if (res.models.length > 0 && !draft.local.imageModel) {
           updateLocal({ imageModel: res.models[0] });
         }
+        setProbeState({ target, loading: false, message: res.message });
+      } else {
+        const res = await probeLocalEndpoint(
+          "video",
+          draft.local.videoBaseUrl,
+          draft.local.transportMode,
+          draft.local.videoAuthToken
+        );
         setProbeState({ target, loading: false, message: res.message });
       }
     } catch (err) {
@@ -434,21 +442,48 @@ export function LocalModelModal({
               </p>
             )}
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <label className="text-zinc-400 block">本地動態影片生成端點（POST JSON 接收 prompt/imageDataUrl）</label>
-                <input
-                  type="text"
-                  value={draft.local.videoBaseUrl}
-                  onChange={(e) => updateLocal({ videoBaseUrl: e.target.value })}
-                  className="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 font-mono text-zinc-100"
+            <div className="pt-2 border-t border-zinc-800/70 space-y-2.5">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-zinc-300 font-medium">
+                  本地動態影片生成端點（POST JSON 接收 prompt / imageDataUrl）
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleProbe("video")}
+                  disabled={probeState.loading && probeState.target === "video"}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-200 hover:bg-zinc-800 cursor-pointer shrink-0"
+                >
+                  {probeState.loading && probeState.target === "video" ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <RefreshCw className="w-3.5 h-3.5" />
+                  )}
+                  <span>檢測影片連線</span>
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-zinc-400 block">影片端點位址</label>
+                  <input
+                    type="text"
+                    value={draft.local.videoBaseUrl}
+                    onChange={(e) => updateLocal({ videoBaseUrl: e.target.value })}
+                    className="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 font-mono text-zinc-100"
+                  />
+                </div>
+                <TokenField
+                  label="影片端點 Bearer Token（選填）"
+                  value={draft.local.videoAuthToken ?? ""}
+                  onChange={(val) => updateLocal({ videoAuthToken: val })}
                 />
               </div>
-              <TokenField
-                label="影片端點 Bearer Token（選填）"
-                value={draft.local.videoAuthToken ?? ""}
-                onChange={(val) => updateLocal({ videoAuthToken: val })}
-              />
+
+              {probeState.target === "video" && (probeState.message || probeState.error) && (
+                <p className={probeState.error ? "text-rose-400" : "text-emerald-400"}>
+                  {probeState.error || probeState.message}
+                </p>
+              )}
             </div>
           </div>
 

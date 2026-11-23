@@ -265,11 +265,21 @@ function buildHeaders(token?: string, includeJson = true): Record<string, string
 }
 
 export async function probeLocalDirect(
-  kind: "ollama" | "openai_compatible" | "a1111" | "comfyui",
+  kind: "ollama" | "openai_compatible" | "a1111" | "comfyui" | "video",
   rawBaseUrl: string,
   authToken?: string
 ): Promise<{ ok: boolean; models: string[]; message: string }> {
   const url = rawBaseUrl.trim().replace(/\/+$/, "");
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`無效的本地端服務位址：${rawBaseUrl || "(空白)"}`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("僅支援 http:// 或 https:// 本地端位址");
+  }
+
   const headers = buildHeaders(authToken, false);
   if (kind === "ollama") {
     const resp = await fetch(`${url}/api/tags`, { headers });
@@ -292,6 +302,32 @@ export async function probeLocalDirect(
     const data = (await resp.json()) as Array<{ title?: string; model_name?: string }>;
     const models = data.map((m) => m.title || m.model_name || "").filter(Boolean);
     return { ok: true, models, message: `瀏覽器已直連 A1111，偵測到 ${models.length} 個權重` };
+  }
+  if (kind === "video") {
+    const resp = await fetch(url, { headers });
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error(`驗證失敗（HTTP ${resp.status}），請檢查 Bearer Token 是否正確`);
+    }
+    if (resp.status === 405) {
+      return {
+        ok: true,
+        models: [],
+        message: "瀏覽器已直連影片端點（伺服器回應 405，僅接受 POST 請求）",
+      };
+    }
+    if (resp.status === 404) {
+      const opt = await fetch(url, { method: "OPTIONS", headers }).catch(() => null);
+      if (opt && (opt.ok || opt.status === 204)) {
+        return {
+          ok: true,
+          models: [],
+          message: "瀏覽器已直連影片端點（端點僅接受 POST / OPTIONS 請求）",
+        };
+      }
+      throw new Error("HTTP 404（伺服器可連線，但找不到此端點路徑）");
+    }
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    return { ok: true, models: [], message: `瀏覽器已直連本地影片端點（HTTP ${resp.status}）` };
   }
   const resp = await fetch(`${url}/object_info/CheckpointLoaderSimple`, { headers });
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -456,4 +492,37 @@ export async function generateLocalSpeechDirect(
     mimeType,
     voiceName: local.ttsVoice || params.voiceName,
   };
+}
+
+export async function generateLocalVideoDirect(
+  params: {
+    prompt: string;
+    imageDataUrl?: string;
+    aspectRatio: AspectRatio;
+    durationSec: number;
+  },
+  local: LocalModelConfig
+): Promise<{ videoUrl: string; mimeType: string }> {
+  const baseUrl = local.videoBaseUrl.trim().replace(/\/+$/, "");
+  const resp = await fetch(baseUrl, {
+    method: "POST",
+    headers: buildHeaders(local.videoAuthToken, true),
+    body: JSON.stringify(params),
+  });
+  if (!resp.ok) throw new Error(`本地影片服務錯誤 (${resp.status})`);
+  const contentType = resp.headers.get("content-type") || "";
+  if (contentType.includes("video/")) {
+    const buf = new Uint8Array(await resp.arrayBuffer());
+    let binary = "";
+    const chunkSize = 0x8000;
+    for (let i = 0; i < buf.length; i += chunkSize) {
+      binary += String.fromCharCode(...buf.subarray(i, i + chunkSize));
+    }
+    return { videoUrl: `data:${contentType};base64,${btoa(binary)}`, mimeType: contentType };
+  }
+  const json = (await resp.json()) as { videoUrl?: string; data?: string; mimeType?: string };
+  const videoUrl =
+    json.videoUrl || (json.data ? `data:${json.mimeType || "video/mp4"};base64,${json.data}` : "");
+  if (!videoUrl) throw new Error("本地影片端點未回傳 videoUrl 或 base64 影片資料");
+  return { videoUrl, mimeType: json.mimeType || "video/mp4" };
 }
