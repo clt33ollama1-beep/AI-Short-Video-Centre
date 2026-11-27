@@ -1,4 +1,8 @@
 import type { AspectRatio, EnginePreferences, LocalModelConfig } from "../types/director";
+import {
+  DEFAULT_COMFYUI_IMAGE_WORKFLOW_JSON,
+  DEFAULT_COMFYUI_VIDEO_WORKFLOW_JSON,
+} from "./comfyWorkflows";
 
 const STORAGE_KEY = "cineforge_engine_preferences_v1";
 
@@ -12,9 +16,12 @@ export const DEFAULT_LOCAL_CONFIG: LocalModelConfig = {
   imageBaseUrl: "http://127.0.0.1:7860",
   imageModel: "",
   imageAuthToken: "",
+  imageWorkflowJson: DEFAULT_COMFYUI_IMAGE_WORKFLOW_JSON,
   videoProvider: "custom_http",
   videoBaseUrl: "http://127.0.0.1:8188",
+  videoModel: "",
   videoAuthToken: "",
+  videoWorkflowJson: DEFAULT_COMFYUI_VIDEO_WORKFLOW_JSON,
   ttsProvider: "browser_speech",
   ttsBaseUrl: "http://127.0.0.1:8880",
   ttsModel: "kokoro",
@@ -39,13 +46,20 @@ export function loadEnginePreferences(): EnginePreferences {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return DEFAULT_ENGINE_PREFERENCES;
     const parsed = JSON.parse(raw) as Partial<EnginePreferences>;
+    const mergedLocal: LocalModelConfig = {
+      ...DEFAULT_LOCAL_CONFIG,
+      ...(parsed.local ?? {}),
+    };
+    if (!mergedLocal.imageWorkflowJson?.trim()) {
+      mergedLocal.imageWorkflowJson = DEFAULT_COMFYUI_IMAGE_WORKFLOW_JSON;
+    }
+    if (!mergedLocal.videoWorkflowJson?.trim()) {
+      mergedLocal.videoWorkflowJson = DEFAULT_COMFYUI_VIDEO_WORKFLOW_JSON;
+    }
     return {
       ...DEFAULT_ENGINE_PREFERENCES,
       ...parsed,
-      local: {
-        ...DEFAULT_LOCAL_CONFIG,
-        ...(parsed.local ?? {}),
-      },
+      local: mergedLocal,
     };
   } catch {
     return DEFAULT_ENGINE_PREFERENCES;
@@ -597,6 +611,9 @@ export async function generateLocalVideoDirect(
   },
   local: LocalModelConfig
 ): Promise<{ videoUrl: string; mimeType: string }> {
+  if (local.videoProvider === "comfyui_animate") {
+    throw new Error("ComfyUI 影片流程需使用「後端伺服器代理」模式執行排程與取片");
+  }
   const baseUrl = local.videoBaseUrl.trim().replace(/\/+$/, "");
   const resp = await fetch(baseUrl, {
     method: "POST",

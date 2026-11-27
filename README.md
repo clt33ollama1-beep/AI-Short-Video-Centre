@@ -18,10 +18,11 @@
   Uses `gemini-3.8-flash-tts` / `gemini-3.8-flash-lite-tts` with `speechMetadata` style direction and 5 prebuilt voices (`Puck`, `Charon`, `Kore`, `Fenrir`, `Zephyr`) returning 24kHz WAV tracks.
 - **Original Film Scoring (`POST /api/director/music`)**
   Uses `lyria-3-clip-preview` (or `lyria-3-pro-preview`) conditioned on both the musical prompt and the opening frame to stream an MP3 score, automatically ducking background volume when dialogue plays.
-- **Cohesive Screening Room & Export**
+- **Cohesive Screening Room, Storyboard Recovery & Export**
   - **成片放映廳 (Screening Room)**: Synchronizes video/Ken Burns motion, subtitles, optional `2.39:1` letterbox bars, voiceovers, and background music.
-  - **分鏡導演室 (Storyboard Studio)**: Edit dialogue, voice style, camera prompts, duration, or regenerate individual frames, videos, and voices.
+  - **分鏡導演室 (Storyboard Studio)**: Edit dialogue, voice style, camera prompts, duration, regenerate individual frames/videos/voices, or resume missing frames in one click (`補繪缺漏分鏡`).
   - **多軌時間軸 (NLE Timeline)**: Visualizes `V1` (Visuals), `A1` (Dialogue WAV), and `A2` (Lyria Score) tracks with interactive playhead scrubbing.
+  - **Persistent Library & Backups**: Automatically saves all projects to browser `IndexedDB` and syncs them to server disk (`cineforge-data/projects.json` via `GET/PUT /api/projects`), plus full `.json` project export/import.
   - **One-Click Exports**: Render and download a mixed `.webm` video file (`canvas.captureStream` + `MediaRecorder` + Web Audio) or export the complete Markdown production bible (`_分鏡劇本手冊.md`).
 
 ---
@@ -30,7 +31,9 @@
 
 ```text
 .
-├── server.ts                        # Express + Vite server & server-side @google/genai API routes
+├── server.ts                        # Express + Vite server, @google/genai, ComfyUI/local proxies & project sync API
+├── Dockerfile                       # Multi-stage Node 22 slim production image
+├── docker-compose.yml               # Compose deployment with host-gateway & persistent ./cineforge-data volume
 ├── index.html                       # Entry HTML & Google Fonts (Outfit, Plus Jakarta Sans, JetBrains Mono)
 ├── package.json                     # Scripts (dev, build, start, lint) & dependencies
 ├── metadata.json                    # App metadata & server-side Gemini capability declaration
@@ -38,48 +41,60 @@
 └── src/
     ├── App.tsx                      # Main workspace, pipeline orchestration & Script Sheet view
     ├── index.css                    # Tailwind CSS v4 theme & Ken Burns cinema motion keyframes
-    ├── types/director.ts            # TypeScript models for DramaProject, DramaScene & PipelineProgress
+    ├── types/director.ts            # TypeScript models for DramaProject, DramaScene, LocalModelConfig & PipelineProgress
     ├── data/showcaseProject.ts      # Pre-loaded showcase ("第七號月台的信號") & starter presets
     ├── utils/
-    │   ├── api.ts                   # Typed client fetch wrappers for /api/director/*
-    │   └── exportProduction.ts      # Markdown bible exporter & real-time WebM canvas+audio renderer
+    │   ├── api.ts                   # Typed client fetch wrappers for /api/director/* & /api/local/*
+    │   ├── comfyWorkflows.ts        # Default ComfyUI image/video API workflows, inspection & variable compiler
+    │   ├── exportProduction.ts      # Markdown bible exporter & real-time WebM canvas+audio renderer
+    │   ├── localRuntime.ts          # Engine preference persistence, Web Audio score synth & browser-direct runtime
+    │   └── projectStorage.ts        # IndexedDB + server disk (/api/projects) sync & JSON archive export/import
     ├── assets/images/               # Pre-generated showcase cinema stills
     └── components/
         ├── ScreeningPlayer.tsx      # Synchronized cinema theater & audio-ducking player
         ├── StoryboardBoard.tsx      # Shot grid & per-scene director prompt/voice inspector
         ├── TimelineEditor.tsx       # 3-track NLE timeline & Lyria score editor
         ├── CreationStudioModal.tsx  # New short drama briefing wizard
-        └── LocalModelModal.tsx      # Hybrid / Local model engine settings (Ollama, A1111, ComfyUI, TTS)
+        └── LocalModelModal.tsx      # Hybrid / local model settings, endpoint probes & ComfyUI workflow editors
 ```
 
 ---
 
 ## Local & Hybrid Model Support / 本地與混合模型支援
 
-Click **「引擎：Gemini 雲端 / 本地」** in the workspace bar to switch all 5 modalities—or mix Gemini and local models per stage:
+Click **「引擎設定」** in the workspace bar to switch all 5 modalities—or mix Gemini and local models per stage:
 
-- **Script LLM**: Ollama (`/api/chat`) or OpenAI-compatible servers (LM Studio, vLLM, llama.cpp) with automatic model discovery.
-- **Storyboard Images**: Automatic1111 / Forge (`/sdapi/v1/txt2img`, `img2img`), ComfyUI (`/prompt`), or OpenAI-compatible `/v1/images/generations`.
-- **Video Motion**: Custom local HTTP video endpoint (`POST` JSON).
+- **Script LLM**: Ollama (`/api/chat`) or OpenAI-compatible servers (LM Studio, vLLM, llama.cpp) with automatic model discovery, strict `response_format` compatibility (`json_object` → `json_schema` fallback), and `<think>` tag stripping.
+- **Storyboard Images (`A1111 / ComfyUI / OpenAI-compatible`)**:
+  - Automatic1111 / Forge (`/sdapi/v1/txt2img`, `img2img`), OpenAI-compatible `/v1/images/generations`, or **ComfyUI (`/prompt`)**.
+  - **Custom ComfyUI Image Workflow**: Shows the active system default 7-node API workflow JSON in the UI by default. Edit directly, paste or import a **Save (API Format)** `.json` file, validate node count & syntax live, or reset to default anytime.
+- **Video Motion (`Custom HTTP / ComfyUI Video Workflow`)**:
+  - Choose between a custom local HTTP video endpoint (`POST` JSON receiving `prompt` / `imageDataUrl`) or **ComfyUI 影片 Workflow (`/prompt`)**.
+  - **Custom ComfyUI Video Workflow**: Pre-loaded with a default SVD-ready image-to-video API workflow JSON (`ImageOnlyCheckpointLoader` → `LoadImage` → `SVD_img2vid_Conditioning` → `KSampler` → `CreateVideo` → `SaveVideo`). Supports importing any **Save (API Format)** video workflow (SVD, AnimateDiff, Wan2.1, HunyuanVideo, etc.) and probing endpoint readiness via **「檢測影片連線 / 檢測 ComfyUI 影片連線」**.
+- **Workflow Dynamic Placeholders / Workflow 動態佔位符**:
+  - Image & Video variables: `{{prompt}}`, `{{negative_prompt}}`, `{{width}}`, `{{height}}`, `{{seed}}`, `{{checkpoint}}`, `{{reference_image}}`
+  - Video-specific variables: `{{image_filename}}` (automatically uploaded via ComfyUI `/upload/image`), `{{frames}}`, `{{duration_sec}}`
+  - Exact numeric placeholders (e.g. `"{{width}}"`, `"{{height}}"`, `"{{seed}}"`, `"{{frames}}"`, `"{{duration_sec}}"`) are automatically compiled to JSON numbers.
 - **Voiceover / TTS**: Browser offline Web Speech synthesis (zero-server) or local OpenAI-compatible TTS servers (e.g., Kokoro-FastAPI `/v1/audio/speech`).
 - **Music Score**: Built-in Web Audio API `OfflineAudioContext` procedural 30s WAV score synthesizer (zero-server) or local MusicGen/ACE-Step HTTP endpoint.
-- **Routing Mode**: Choose **Server Proxy** (when running locally via `npm run dev` or Docker) or **Browser Direct** (to connect directly to `127.0.0.1` from a hosted preview with CORS enabled, e.g. `OLLAMA_ORIGINS="*" ollama serve`).
-- **Endpoint Access Tokens (Bearer Token)**: Each local / OpenAI-compatible / HTTP endpoint (LLM, Image, Video, TTS, Music) includes an optional **Access Token / Bearer Token** input field in **「引擎設定」**, automatically sent as `Authorization: Bearer <token>` for authenticated vLLM, LM Studio, RunPod, or reverse-proxied servers.
+- **Routing Mode**: Choose **後端伺服器代理 (Server Proxy)** (recommended for ComfyUI workflows, Docker, or local Node runs) or **瀏覽器直連本機 (Browser Direct)** (to connect directly to `127.0.0.1` from a hosted preview with CORS enabled, e.g. `OLLAMA_ORIGINS="*" ollama serve`).
+- **Endpoint Access Tokens (Bearer Token)**: Each local / OpenAI-compatible / HTTP endpoint (LLM, Image, Video, TTS, Music) includes an optional **Access Token / Bearer Token** input field in **「引擎設定」**, automatically sent as `Authorization: Bearer <token>`.
 
 ---
 
 ## Environment Setup / 環境設定
 
 1. **API Key (Gemini Cloud Mode)**: Set `GEMINI_API_KEY` via `.env`, Docker `-e GEMINI_API_KEY=...`, or AI Studio **Settings > Secrets** (intentionally server-side only, never entered in browser UI). Local-only workflows do not require `GEMINI_API_KEY`.
-2. **Install Dependencies**:
+2. **Data Directory (Optional)**: By default, server-synced projects are stored in `./cineforge-data/projects.json`. You can override this path via `CINEFORGE_DATA_DIR`.
+3. **Install Dependencies**:
    ```bash
    npm install
    ```
-3. **Run Development Server** (Express + Vite middleware on port `3000`):
+4. **Run Development Server** (Express + Vite middleware on port `3000`):
    ```bash
    npm run dev
    ```
-4. **Type-Check & Production Build**:
+5. **Type-Check & Production Build**:
    ```bash
    npm run lint
    npm run build
@@ -90,7 +105,7 @@ Click **「引擎：Gemini 雲端 / 本地」** in the workspace bar to switch a
 
 ## Docker Deployment / 容器化部署
 
-The repository includes a multi-stage `Dockerfile`, `.dockerignore`, and `docker-compose.yml` running Node 22 in production mode with `/api/health` checks and `host.docker.internal` mapping.
+The repository includes a multi-stage `Dockerfile` (Node 22 slim running `node server.ts` directly), `.dockerignore`, and `docker-compose.yml` with `/api/health` checks, `host.docker.internal` mapping, and persistent `./cineforge-data:/app/cineforge-data` volume mounting so saved screenplays and assets survive container rebuilds and system upgrades.
 
 ### Option 1: Docker Compose (Recommended)
 
@@ -109,15 +124,17 @@ docker run -d \
   --name cineforge-studio \
   -p 3000:3000 \
   --add-host=host.docker.internal:host-gateway \
+  -v "$(pwd)/cineforge-data:/app/cineforge-data" \
+  -e CINEFORGE_DATA_DIR=/app/cineforge-data \
   -e GEMINI_API_KEY="your_api_key_here" \
   cineforge-studio
 ```
 
 ### Connecting Docker to Host Local Models
 
-When CineForge runs inside a container and your local AI servers (Ollama, Automatic1111, ComfyUI, Kokoro TTS) run on the host machine:
-- Use `http://host.docker.internal:11434` (Ollama), `http://host.docker.internal:7860` (A1111), `http://host.docker.internal:8188` (ComfyUI), or `http://host.docker.internal:8880` (Local TTS) in **「引擎設定 → 後端伺服器代理」**.
-- Ensure host services bind to `0.0.0.0` (e.g., `OLLAMA_HOST=0.0.0.0 ollama serve`).
+When CineForge runs inside a container and your local AI servers (Ollama, LM Studio, Automatic1111, ComfyUI, Kokoro TTS) run on the host machine:
+- Use `http://host.docker.internal:11434` (Ollama), `http://host.docker.internal:1234/v1` (LM Studio), `http://host.docker.internal:7860` (A1111), `http://host.docker.internal:8188` (ComfyUI), or `http://host.docker.internal:8880` (Local TTS) in **「引擎設定 → 後端伺服器代理」**.
+- Ensure host services bind to `0.0.0.0` (e.g., `OLLAMA_HOST=0.0.0.0 ollama serve`, ComfyUI `--listen 0.0.0.0`).
 
 ---
 
@@ -126,14 +143,16 @@ When CineForge runs inside a container and your local AI servers (Ollama, Automa
 | Method | Endpoint | Engine / Model | Purpose |
 | :--- | :--- | :--- | :--- |
 | `GET` | `/api/health` | — | Verify server status and `GEMINI_API_KEY` availability |
+| `GET` | `/api/projects` | Server Disk (`cineforge-data`) | Load persisted project library across upgrades/restarts |
+| `PUT` | `/api/projects` | Server Disk (`cineforge-data`) | Atomically persist project library and active project ID |
 | `POST` | `/api/director/script` | `gemini-4-hydrogen` | Generate structured script, characters, shots, and music prompt |
 | `POST` | `/api/director/storyboard` | `gemini-3.1-flash-lite-image` / `gemini-nano-banana-2.1` | Generate storyboard keyframe image (with optional reference frame) |
 | `POST` | `/api/director/video` | `gemini-omni-1.2-flash` | Animate still frame or text prompt into 720p MP4 video clip |
 | `POST` | `/api/director/speech` | `gemini-3.8-flash-tts` / `gemini-3.8-flash-lite-tts` | Synthesize character/narrator WAV speech with `speechMetadata` |
 | `POST` | `/api/director/music` | `lyria-3-clip-preview` / `lyria-3-pro-preview` | Stream original MP3 film score |
-| `POST` | `/api/local/probe` | Ollama / LM Studio / A1111 / ComfyUI | Test connectivity and auto-discover installed local models |
+| `POST` | `/api/local/probe` | Ollama / LM Studio / A1111 / ComfyUI / HTTP Video | Test connectivity, Bearer auth, and auto-discover installed local models |
 | `POST` | `/api/local/script` | Ollama / OpenAI-compatible LLM | Generate structured drama script via local LLM |
-| `POST` | `/api/local/storyboard` | A1111 / ComfyUI / OpenAI-compatible | Generate storyboard keyframes via local image engine |
-| `POST` | `/api/local/video` | Local HTTP Video Endpoint | Generate motion clips via local video server |
+| `POST` | `/api/local/storyboard` | A1111 / ComfyUI (Custom Workflow) / OpenAI-compatible | Generate storyboard keyframes via local image engine or custom ComfyUI workflow |
+| `POST` | `/api/local/video` | ComfyUI Video Workflow / Local HTTP Video Endpoint | Generate motion clips via custom ComfyUI `/prompt` workflow or local HTTP server |
 | `POST` | `/api/local/speech` | Kokoro / Local OpenAI TTS | Synthesize character speech via local TTS server |
 | `POST` | `/api/local/music` | Local Music HTTP Endpoint | Generate soundtrack via local music server |

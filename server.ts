@@ -4,6 +4,11 @@ import fs from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import path from "node:path";
 import { GoogleGenAI, Type } from "@google/genai";
+import {
+  DEFAULT_COMFYUI_IMAGE_WORKFLOW,
+  DEFAULT_COMFYUI_VIDEO_WORKFLOW,
+  compileComfyWorkflow,
+} from "./src/utils/comfyWorkflows.ts";
 
 const app = express();
 app.use(express.json({ limit: "150mb" }));
@@ -927,8 +932,14 @@ app.post("/api/local/storyboard", async (req, res) => {
     }
 
     if (provider === "comfyui") {
+      const workflowSource =
+        typeof localConfig.imageWorkflowJson === "string" && localConfig.imageWorkflowJson.trim()
+          ? localConfig.imageWorkflowJson
+          : "";
+      const needsCheckpoint = !workflowSource || workflowSource.includes("{{checkpoint}}");
+
       let ckpt = imageModel;
-      if (!ckpt) {
+      if (!ckpt && needsCheckpoint) {
         const infoResp = await fetch(`${baseUrl}/object_info/CheckpointLoaderSimple`, {
           headers: imageGetHeaders,
           signal: AbortSignal.timeout(8000),
@@ -940,39 +951,54 @@ app.post("/api/local/storyboard", async (req, res) => {
           ckpt = infoData.CheckpointLoaderSimple?.input?.required?.ckpt_name?.[0]?.[0] ?? "";
         }
       }
-      if (!ckpt) {
+      if (!ckpt && needsCheckpoint) {
         throw new Error("ComfyUI 未偵測到可用的 Checkpoint 模型，請於設定指定模型檔名。");
       }
 
-      const workflow = {
-        "3": {
-          class_type: "KSampler",
-          inputs: {
-            seed: Math.floor(Math.random() * 1_000_000_000),
-            steps: 22,
-            cfg: 7,
-            sampler_name: "euler",
-            scheduler: "normal",
-            denoise: 1,
-            model: ["4", 0],
-            positive: ["6", 0],
-            negative: ["7", 0],
-            latent_image: ["5", 0],
-          },
-        },
-        "4": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: ckpt } },
-        "5": { class_type: "EmptyLatentImage", inputs: { width, height, batch_size: 1 } },
-        "6": {
-          class_type: "CLIPTextEncode",
-          inputs: { text: `${prompt}, cinematic film still`, clip: ["4", 1] },
-        },
-        "7": {
-          class_type: "CLIPTextEncode",
-          inputs: { text: "text, watermark, subtitle, blurry", clip: ["4", 1] },
-        },
-        "8": { class_type: "VAEDecode", inputs: { samples: ["3", 0], vae: ["4", 2] } },
-        "9": { class_type: "SaveImage", inputs: { filename_prefix: "cineforge", images: ["8", 0] } },
-      };
+      let uploadedRefName = "";
+      if (
+        typeof referenceImageDataUrl === "string" &&
+        referenceImageDataUrl &&
+        (workflowSource.includes("{{reference_image}}") || workflowSource.includes("{{image_filename}}"))
+      ) {
+        const parsedRef = parseDataUrl(referenceImageDataUrl);
+        if (parsedRef) {
+          const form = new FormData();
+          const ext = parsedRef.mimeType.includes("jpeg") ? "jpg" : "png";
+          form.append(
+            "image",
+            new Blob([Buffer.from(parsedRef.data, "base64")], { type: parsedRef.mimeType }),
+            `cineforge_ref_${Date.now()}.${ext}`
+          );
+          form.append("overwrite", "true");
+          const uploadResp = await fetch(`${baseUrl}/upload/image`, {
+            method: "POST",
+            headers: imageGetHeaders,
+            body: form,
+            signal: AbortSignal.timeout(30000),
+          });
+          if (!uploadResp.ok) {
+            throw new Error(`ComfyUI 上傳參考圖失敗 (${uploadResp.status})`);
+          }
+          const uploadData = (await uploadResp.json()) as { name?: string };
+          uploadedRefName = uploadData.name || "";
+        }
+      }
+
+      const workflow = compileComfyWorkflow(
+        workflowSource,
+        DEFAULT_COMFYUI_IMAGE_WORKFLOW as unknown as Record<string, unknown>,
+        {
+          prompt,
+          negative_prompt: "text, watermark, subtitle, blurry",
+          width,
+          height,
+          seed: Math.floor(Math.random() * 1_000_000_000),
+          checkpoint: ckpt,
+          reference_image: uploadedRefName,
+          image_filename: uploadedRefName,
+        }
+      );
 
       const queueResp = await fetch(`${baseUrl}/prompt`, {
         method: "POST",
@@ -1052,7 +1078,7 @@ app.post("/api/local/storyboard", async (req, res) => {
       res.json({
         imageUrl: `data:image/png;base64,${buf.toString("base64")}`,
         mimeType: "image/png",
-        model: ckpt,
+        model: ckpt || "custom-comfyui",
       });
       return;
     }
@@ -1093,6 +1119,186 @@ app.post("/api/local/video", async (req, res) => {
     const { prompt, imageDataUrl, aspectRatio = "16:9", durationSec = 6, localConfig = {} } =
       req.body ?? {};
     const baseUrl = sanitizeBaseUrl(localConfig.videoBaseUrl, "http://127.0.0.1:8188");
+
+    if (localConfig.videoProvider === "comfyui_animate") {
+      const videoHeaders = buildLocalHeaders(localConfig.videoAuthToken, true);
+      const videoGetHeaders = buildLocalHeaders(localConfig.videoAuthToken, false);
+      const workflowSource =
+        typeof localConfig.videoWorkflowJson === "string" && localConfig.videoWorkflowJson.trim()
+          ? localConfig.videoWorkflowJson
+          : "";
+      const needsCheckpoint = !workflowSource || workflowSource.includes("{{checkpoint}}");
+
+      let ckpt =
+        typeof localConfig.videoModel === "string" && localConfig.videoModel.trim()
+          ? localConfig.videoModel.trim()
+          : "";
+      if (!ckpt && needsCheckpoint) {
+        for (const nodeName of ["ImageOnlyCheckpointLoader", "CheckpointLoaderSimple"]) {
+          const infoResp = await fetch(`${baseUrl}/object_info/${nodeName}`, {
+            headers: videoGetHeaders,
+            signal: AbortSignal.timeout(8000),
+          }).catch(() => null);
+          if (infoResp?.ok) {
+            const infoData = (await infoResp.json()) as Record<
+              string,
+              { input?: { required?: { ckpt_name?: [string[]] } } }
+            >;
+            const found = infoData[nodeName]?.input?.required?.ckpt_name?.[0]?.[0] ?? "";
+            if (found) {
+              ckpt = found;
+              break;
+            }
+          }
+        }
+      }
+      if (!ckpt && needsCheckpoint) {
+        throw new Error("ComfyUI 未偵測到影片 Checkpoint 模型，請於設定指定模型檔名或移除 {{checkpoint}} 佔位符。");
+      }
+
+      let uploadedImageName = "";
+      const needsImageUpload =
+        !workflowSource ||
+        workflowSource.includes("{{image_filename}}") ||
+        workflowSource.includes("{{reference_image}}");
+      if (typeof imageDataUrl === "string" && imageDataUrl && needsImageUpload) {
+        const parsedImg = parseDataUrl(imageDataUrl);
+        if (parsedImg) {
+          const form = new FormData();
+          const ext = parsedImg.mimeType.includes("jpeg") ? "jpg" : "png";
+          form.append(
+            "image",
+            new Blob([Buffer.from(parsedImg.data, "base64")], { type: parsedImg.mimeType }),
+            `cineforge_vid_src_${Date.now()}.${ext}`
+          );
+          form.append("overwrite", "true");
+          const uploadResp = await fetch(`${baseUrl}/upload/image`, {
+            method: "POST",
+            headers: videoGetHeaders,
+            body: form,
+            signal: AbortSignal.timeout(30000),
+          });
+          if (!uploadResp.ok) {
+            throw new Error(`ComfyUI 上傳來源分鏡圖失敗 (${uploadResp.status})`);
+          }
+          const uploadData = (await uploadResp.json()) as { name?: string };
+          uploadedImageName = uploadData.name || "";
+        }
+      }
+
+      const clampedDuration = Math.min(10, Math.max(3, Math.round(Number(durationSec) || 6)));
+      const width = aspectRatio === "9:16" ? 576 : 1024;
+      const height = aspectRatio === "9:16" ? 1024 : 576;
+      const frames = Math.min(81, Math.max(14, Math.round(clampedDuration * 8)));
+
+      const workflow = compileComfyWorkflow(
+        workflowSource,
+        DEFAULT_COMFYUI_VIDEO_WORKFLOW as unknown as Record<string, unknown>,
+        {
+          prompt: String(prompt || ""),
+          negative_prompt: "blurry, static, watermark, distorted, low quality",
+          width,
+          height,
+          seed: Math.floor(Math.random() * 1_000_000_000),
+          checkpoint: ckpt,
+          image_filename: uploadedImageName,
+          reference_image: uploadedImageName,
+          frames,
+          duration_sec: clampedDuration,
+        }
+      );
+
+      const queueResp = await fetch(`${baseUrl}/prompt`, {
+        method: "POST",
+        headers: videoHeaders,
+        body: JSON.stringify({ prompt: workflow }),
+      });
+      if (!queueResp.ok) {
+        throw new Error(`ComfyUI 影片排程失敗 (${queueResp.status}): ${await queueResp.text()}`);
+      }
+      const { prompt_id } = (await queueResp.json()) as { prompt_id: string };
+
+      interface ComfyMediaItem {
+        filename: string;
+        subfolder?: string;
+        type?: string;
+        format?: string;
+      }
+
+      let outputMedia: ComfyMediaItem | null = null;
+      const deadline = Date.now() + 480000;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const histResp = await fetch(`${baseUrl}/history/${prompt_id}`, { headers: videoGetHeaders });
+        if (!histResp.ok) continue;
+        const hist = (await histResp.json()) as Record<
+          string,
+          {
+            status?: {
+              status_str?: string;
+              messages?: Array<[string, Record<string, unknown>]>;
+            };
+            outputs?: Record<
+              string,
+              {
+                videos?: ComfyMediaItem[];
+                gifs?: ComfyMediaItem[];
+                images?: ComfyMediaItem[];
+              }
+            >;
+          }
+        >;
+        const entry = hist[prompt_id];
+        if (entry?.status?.status_str === "error") {
+          const execErr = entry.status.messages?.find((m) => m[0] === "execution_error")?.[1];
+          const nodeType = execErr?.node_type ? String(execErr.node_type) : "ComfyUI";
+          const detail = execErr?.exception_message
+            ? String(execErr.exception_message).trim()
+            : "影片工作流程執行發生錯誤";
+          throw new Error(`ComfyUI 影片算圖失敗（${nodeType}）：${detail}`);
+        }
+        const nodes = Object.values(entry?.outputs ?? {});
+        const foundVideo =
+          nodes.find((o) => o.videos && o.videos.length > 0)?.videos?.[0] ??
+          nodes.find((o) => o.gifs && o.gifs.length > 0)?.gifs?.[0] ??
+          nodes.find((o) => o.images && o.images.length > 0)?.images?.[0];
+        if (foundVideo) {
+          outputMedia = foundVideo;
+          break;
+        }
+      }
+
+      if (!outputMedia) {
+        throw new Error(`ComfyUI 影片算圖逾時（prompt_id=${prompt_id}），請檢查 ComfyUI 佇列與終端機。`);
+      }
+
+      const viewUrl = `${baseUrl}/view?filename=${encodeURIComponent(
+        outputMedia.filename
+      )}&subfolder=${encodeURIComponent(outputMedia.subfolder ?? "")}&type=${encodeURIComponent(
+        outputMedia.type ?? "output"
+      )}`;
+      const mediaResp = await fetch(viewUrl, { headers: videoGetHeaders });
+      if (!mediaResp.ok) {
+        throw new Error(`ComfyUI 影片下載失敗 (${mediaResp.status})`);
+      }
+      const ext = path.extname(outputMedia.filename).toLowerCase();
+      const inferredMime =
+        ext === ".webm"
+          ? "video/webm"
+          : ext === ".mp4"
+          ? "video/mp4"
+          : ext === ".webp"
+          ? "image/webp"
+          : ext === ".gif"
+          ? "image/gif"
+          : mediaResp.headers.get("content-type")?.split(";")[0] || "video/mp4";
+      const buf = Buffer.from(await mediaResp.arrayBuffer());
+      res.json({
+        videoUrl: `data:${inferredMime};base64,${buf.toString("base64")}`,
+        mimeType: inferredMime,
+      });
+      return;
+    }
 
     const resp = await fetch(baseUrl, {
       method: "POST",

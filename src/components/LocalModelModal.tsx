@@ -1,7 +1,24 @@
-import { useState } from "react";
-import { CheckCircle2, Cpu, Eye, EyeOff, KeyRound, Loader2, RefreshCw, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import {
+  CheckCircle2,
+  Cpu,
+  Eye,
+  EyeOff,
+  FileCode2,
+  KeyRound,
+  Loader2,
+  RefreshCw,
+  RotateCcw,
+  Upload,
+  X,
+} from "lucide-react";
 import type { EnginePreferences, EngineProvider, LocalModelConfig } from "../types/director";
 import { probeLocalEndpoint } from "../utils/api";
+import {
+  DEFAULT_COMFYUI_IMAGE_WORKFLOW_JSON,
+  DEFAULT_COMFYUI_VIDEO_WORKFLOW_JSON,
+  inspectComfyWorkflow,
+} from "../utils/comfyWorkflows";
 
 interface LocalModelModalProps {
   open: boolean;
@@ -52,6 +69,94 @@ function TokenField({
   );
 }
 
+function ComfyWorkflowEditor({
+  title,
+  placeholderHint,
+  value,
+  defaultJson,
+  onChange,
+}: {
+  title: string;
+  placeholderHint: string;
+  value: string;
+  defaultJson: string;
+  onChange: (next: string) => void;
+}) {
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const inspection = inspectComfyWorkflow(value);
+
+  const handleImportFile = async (file: File | undefined) => {
+    if (!file) return;
+    const text = await file.text();
+    onChange(text);
+  };
+
+  return (
+    <div className="rounded-lg bg-zinc-950/90 border border-zinc-800 p-3 space-y-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <FileCode2 className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+          <span className="text-zinc-200 font-medium">{title}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json,application/json"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              void handleImportFile(file);
+              e.target.value = "";
+            }}
+            className="hidden"
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-zinc-900 border border-zinc-800 text-zinc-300 hover:bg-zinc-800 cursor-pointer"
+          >
+            <Upload className="w-3 h-3" />
+            <span>匯入 API JSON</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onChange(defaultJson)}
+            className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-zinc-900 border border-zinc-800 text-zinc-300 hover:bg-zinc-800 cursor-pointer"
+          >
+            <RotateCcw className="w-3 h-3" />
+            <span>還原系統預設</span>
+          </button>
+        </div>
+      </div>
+
+      <p className="text-[11px] text-zinc-400 leading-relaxed">
+        預設顯示系統目前使用的 ComfyUI API Workflow，您可直接編輯或從 ComfyUI（Dev Mode → Save API Format）匯入自訂流程。支援變數：
+        <code className="font-mono text-amber-300/90 ml-1">{placeholderHint}</code>
+      </p>
+
+      <textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        rows={10}
+        spellCheck={false}
+        className="w-full rounded-lg bg-[#09090B] border border-zinc-800 p-2.5 font-mono text-[11px] leading-relaxed text-zinc-200 focus:outline-none focus:border-amber-500/70 resize-y"
+      />
+
+      {inspection.valid ? (
+        <p className="text-[11px] text-emerald-400">
+          API Workflow 格式有效（共 {inspection.nodeCount} 個節點
+          {inspection.placeholders.length > 0
+            ? `，偵測到佔位符：${inspection.placeholders.join("、")}`
+            : "，未偵測到動態佔位符"}
+          ）
+        </p>
+      ) : (
+        <p className="text-[11px] text-rose-400">{inspection.error}</p>
+      )}
+    </div>
+  );
+}
+
 export function LocalModelModal({
   open,
   preferences,
@@ -61,6 +166,8 @@ export function LocalModelModal({
   const [draft, setDraft] = useState<EnginePreferences>(preferences);
   const [llmModels, setLlmModels] = useState<string[]>([]);
   const [imageModels, setImageModels] = useState<string[]>([]);
+  const [videoModels, setVideoModels] = useState<string[]>([]);
+  const [workflowSaveError, setWorkflowSaveError] = useState<string | null>(null);
   const [probeState, setProbeState] = useState<{
     target: "llm" | "image" | "video" | null;
     loading: boolean;
@@ -68,9 +175,18 @@ export function LocalModelModal({
     error?: string;
   }>({ target: null, loading: false });
 
+  useEffect(() => {
+    if (open) {
+      setDraft(preferences);
+      setWorkflowSaveError(null);
+      setProbeState({ target: null, loading: false });
+    }
+  }, [open, preferences]);
+
   if (!open) return null;
 
   const updateLocal = (patch: Partial<LocalModelConfig>) => {
+    setWorkflowSaveError(null);
     setDraft((prev) => ({
       ...prev,
       local: { ...prev.local, ...patch },
@@ -116,12 +232,17 @@ export function LocalModelModal({
         }
         setProbeState({ target, loading: false, message: res.message });
       } else {
+        const probeKind = draft.local.videoProvider === "comfyui_animate" ? "comfyui" : "video";
         const res = await probeLocalEndpoint(
-          "video",
+          probeKind,
           draft.local.videoBaseUrl,
           draft.local.transportMode,
           draft.local.videoAuthToken
         );
+        setVideoModels(res.models);
+        if (res.models.length > 0 && !draft.local.videoModel) {
+          updateLocal({ videoModel: res.models[0] });
+        }
         setProbeState({ target, loading: false, message: res.message });
       }
     } catch (err) {
@@ -134,7 +255,31 @@ export function LocalModelModal({
   };
 
   const handleApply = () => {
-    onSave(draft);
+    const imgWorkflow = draft.local.imageWorkflowJson ?? DEFAULT_COMFYUI_IMAGE_WORKFLOW_JSON;
+    const vidWorkflow = draft.local.videoWorkflowJson ?? DEFAULT_COMFYUI_VIDEO_WORKFLOW_JSON;
+
+    if (draft.local.imageProvider === "comfyui") {
+      const imgInspect = inspectComfyWorkflow(imgWorkflow);
+      if (!imgInspect.valid) {
+        setWorkflowSaveError(`生圖 ComfyUI Workflow 錯誤：${imgInspect.error}`);
+        return;
+      }
+    }
+    if (draft.local.videoProvider === "comfyui_animate") {
+      const vidInspect = inspectComfyWorkflow(vidWorkflow);
+      if (!vidInspect.valid) {
+        setWorkflowSaveError(`影片 ComfyUI Workflow 錯誤：${vidInspect.error}`);
+        return;
+      }
+    }
+    onSave({
+      ...draft,
+      local: {
+        ...draft.local,
+        imageWorkflowJson: imgWorkflow.trim() ? imgWorkflow : DEFAULT_COMFYUI_IMAGE_WORKFLOW_JSON,
+        videoWorkflowJson: vidWorkflow.trim() ? vidWorkflow : DEFAULT_COMFYUI_VIDEO_WORKFLOW_JSON,
+      },
+    });
     onClose();
   };
 
@@ -442,10 +587,20 @@ export function LocalModelModal({
               </p>
             )}
 
-            <div className="pt-2 border-t border-zinc-800/70 space-y-2.5">
+            {draft.local.imageProvider === "comfyui" && (
+              <ComfyWorkflowEditor
+                title="生圖 ComfyUI Workflow（API Format）"
+                placeholderHint="{{prompt}} {{negative_prompt}} {{width}} {{height}} {{seed}} {{checkpoint}} {{reference_image}}"
+                value={draft.local.imageWorkflowJson ?? DEFAULT_COMFYUI_IMAGE_WORKFLOW_JSON}
+                defaultJson={DEFAULT_COMFYUI_IMAGE_WORKFLOW_JSON}
+                onChange={(next) => updateLocal({ imageWorkflowJson: next })}
+              />
+            )}
+
+            <div className="pt-2 border-t border-zinc-800/70 space-y-3">
               <div className="flex items-center justify-between gap-3">
                 <span className="text-zinc-300 font-medium">
-                  本地動態影片生成端點（POST JSON 接收 prompt / imageDataUrl）
+                  本地動態影片生成（支援 ComfyUI 影片 Workflow 或自訂 HTTP 端點）
                 </span>
                 <button
                   type="button"
@@ -458,11 +613,31 @@ export function LocalModelModal({
                   ) : (
                     <RefreshCw className="w-3.5 h-3.5" />
                   )}
-                  <span>檢測影片連線</span>
+                  <span>
+                    {draft.local.videoProvider === "comfyui_animate"
+                      ? "檢測 ComfyUI 影片連線"
+                      : "檢測影片連線"}
+                  </span>
                 </button>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="space-y-1">
+                  <label className="text-zinc-400 block">影片引擎協定</label>
+                  <select
+                    value={draft.local.videoProvider}
+                    onChange={(e) =>
+                      updateLocal({
+                        videoProvider: e.target.value as LocalModelConfig["videoProvider"],
+                      })
+                    }
+                    className="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 text-zinc-100"
+                  >
+                    <option value="custom_http">自訂 HTTP 影片端點</option>
+                    <option value="comfyui_animate">ComfyUI 影片 Workflow (/prompt)</option>
+                  </select>
+                </div>
+
                 <div className="space-y-1">
                   <label className="text-zinc-400 block">影片端點位址</label>
                   <input
@@ -472,17 +647,63 @@ export function LocalModelModal({
                     className="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 font-mono text-zinc-100"
                   />
                 </div>
-                <TokenField
-                  label="影片端點 Bearer Token（選填）"
-                  value={draft.local.videoAuthToken ?? ""}
-                  onChange={(val) => updateLocal({ videoAuthToken: val })}
-                />
+
+                {draft.local.videoProvider === "comfyui_animate" ? (
+                  <div className="space-y-1">
+                    <label className="text-zinc-400 block">影片 Checkpoint（選填）</label>
+                    {videoModels.length > 0 ? (
+                      <select
+                        value={draft.local.videoModel ?? ""}
+                        onChange={(e) => updateLocal({ videoModel: e.target.value })}
+                        className="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 font-mono text-zinc-100"
+                      >
+                        <option value="">自動偵測</option>
+                        {videoModels.map((m) => (
+                          <option key={m} value={m}>
+                            {m}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type="text"
+                        value={draft.local.videoModel ?? ""}
+                        onChange={(e) => updateLocal({ videoModel: e.target.value })}
+                        placeholder="例如 svd_xt.safetensors"
+                        className="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 font-mono text-zinc-100"
+                      />
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    <label className="text-zinc-400 block">HTTP 介面規格</label>
+                    <div className="rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 text-zinc-500">
+                      POST JSON (prompt / imageDataUrl)
+                    </div>
+                  </div>
+                )}
               </div>
+
+              <TokenField
+                label="影片端點 Access Token / Bearer Token（選填）"
+                value={draft.local.videoAuthToken ?? ""}
+                onChange={(val) => updateLocal({ videoAuthToken: val })}
+              />
 
               {probeState.target === "video" && (probeState.message || probeState.error) && (
                 <p className={probeState.error ? "text-rose-400" : "text-emerald-400"}>
                   {probeState.error || probeState.message}
                 </p>
+              )}
+
+              {draft.local.videoProvider === "comfyui_animate" && (
+                <ComfyWorkflowEditor
+                  title="動態影片 ComfyUI Workflow（API Format）"
+                  placeholderHint="{{image_filename}} {{prompt}} {{negative_prompt}} {{width}} {{height}} {{frames}} {{duration_sec}} {{seed}} {{checkpoint}}"
+                  value={draft.local.videoWorkflowJson ?? DEFAULT_COMFYUI_VIDEO_WORKFLOW_JSON}
+                  defaultJson={DEFAULT_COMFYUI_VIDEO_WORKFLOW_JSON}
+                  onChange={(next) => updateLocal({ videoWorkflowJson: next })}
+                />
               )}
             </div>
           </div>
@@ -591,6 +812,12 @@ export function LocalModelModal({
             </p>
           </div>
         </div>
+
+        {workflowSaveError && (
+          <div className="px-6 py-2 bg-rose-950/60 border-t border-rose-800/60 text-xs text-rose-300">
+            {workflowSaveError}
+          </div>
+        )}
 
         <div className="px-6 py-4 border-t border-zinc-800 flex items-center justify-end gap-3">
           <button

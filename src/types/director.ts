@@ -88,9 +88,12 @@ export interface LocalModelConfig {
   imageBaseUrl: string;
   imageModel: string;
   imageAuthToken?: string;
+  imageWorkflowJson?: string;
   videoProvider: "custom_http" | "comfyui_animate";
   videoBaseUrl: string;
+  videoModel?: string;
   videoAuthToken?: string;
+  videoWorkflowJson?: string;
   ttsProvider: "openai_compatible" | "browser_speech";
   ttsBaseUrl: string;
   ttsModel: string;

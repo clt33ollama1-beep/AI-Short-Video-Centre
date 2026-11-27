@@ -25,6 +25,7 @@ RUN npm install --omit=dev --legacy-peer-deps && npm cache clean --force
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/server.ts ./server.ts
 COPY --from=builder /app/src/assets ./src/assets
+COPY --from=builder /app/src/utils/comfyWorkflows.ts ./src/utils/comfyWorkflows.ts
 
 RUN mkdir -p /app/cineforge-data && chown -R node:node /app
 USER node
